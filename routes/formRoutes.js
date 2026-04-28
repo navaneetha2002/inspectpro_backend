@@ -37,25 +37,22 @@ router.get('/categories', async (req, res, next) => {
 router.get('/:slug', async (req, res, next) => {
   try {
     const { slug } = req.params;
-    const group    = parseInt(req.query.group) || 1;
+    //const group    = parseInt(req.query.group) || 1;
 
     const { rows: cats } = await pool.query('SELECT * FROM categories WHERE slug=$1', [slug]);
     if (!cats.length) return res.status(404).json({ error: 'Category not found' });
 
     const { rows: allQuestions } = await pool.query(
-      'SELECT * FROM questions WHERE category_id=$1 ORDER BY group_index, order_index',
+      'SELECT * FROM questions WHERE category_id=$1 ORDER BY order_index',
       [cats[0].id]
     );
 
-    const maxGroup     = allQuestions.reduce((m, q) => Math.max(m, q.group_index), 1);
-    const groupQuestions = allQuestions.filter(q => q.group_index === group);
+    //const maxGroup     = allQuestions.reduce((m, q) => Math.max(m, q.group_index), 1);
+    //const groupQuestions = allQuestions.filter(q => q.group_index === group);
 
     res.json({
       category:    cats[0],
-      questions:   groupQuestions,
-      group,
-      maxGroup,
-      isLastGroup: group >= maxGroup,
+      questions:   allQuestions,
     });
   } catch (err) { next(err); }
 });
