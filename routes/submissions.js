@@ -47,4 +47,22 @@ router.get('/:uuid', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// DELETE /api/submissions/:uuid
+/*router.delete('/:uuid', async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id FROM form_submissions WHERE submission_uuid=$1',
+      [req.params.uuid]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+
+    // Images are deleted automatically via ON DELETE CASCADE
+    await pool.query(
+      'DELETE FROM form_submissions WHERE submission_uuid=$1',
+      [req.params.uuid]
+    );
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});*/
+
 module.exports = router;

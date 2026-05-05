@@ -63,6 +63,7 @@ router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) 
   try {
     const { slug }  = req.params;
     const answers   = parseAnswers(req.body.answers);
+    const location_id   = req.body.location_id || null;
 
     const { rows: cats } = await pool.query('SELECT * FROM categories WHERE slug=$1', [slug]);
     if (!cats.length) return res.status(404).json({ error: 'Category not found' });
@@ -70,9 +71,9 @@ router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) 
     await client.query('BEGIN');
 
     const { rows: sub } = await client.query(
-      `INSERT INTO form_submissions (category_id, answers)
-       VALUES ($1, $2) RETURNING id, submission_uuid`,
-      [cats[0].id, JSON.stringify(answers)]
+      `INSERT INTO form_submissions (category_id, location_id, answers)
+       VALUES ($1, $2, $3) RETURNING id, submission_uuid`,
+      [cats[0].id, location_id, JSON.stringify(answers)]
     );
     const submissionId   = sub[0].id;
     const submissionUuid = sub[0].submission_uuid;
