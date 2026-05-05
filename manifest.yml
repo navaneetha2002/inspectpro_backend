@@ -1,0 +1,11 @@
+applications:
+  - name: inspectpro-backend
+    memory: 256M
+    instances: 1
+    buildpacks:
+      - nodejs_buildpack
+    command: node server.js
+    env:
+      NODE_ENV: production
+    services:
+      - PostSQLtest
