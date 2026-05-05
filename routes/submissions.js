@@ -48,7 +48,7 @@ router.get('/:uuid', async (req, res, next) => {
 });
 
 // DELETE /api/submissions/:uuid
-/*router.delete('/:uuid', async (req, res, next) => {
+router.delete('/:uuid', async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'SELECT id FROM form_submissions WHERE submission_uuid=$1',
@@ -63,6 +63,6 @@ router.get('/:uuid', async (req, res, next) => {
     );
     res.json({ success: true });
   } catch (err) { next(err); }
-});*/
+});
 
 module.exports = router;
