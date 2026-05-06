@@ -2,20 +2,32 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const pool = require('../db'); // your pg connection
+const pool = require('../db/db'); // your pg connection
 
 // REGISTER
 router.post('/register', async (req, res) => {
+
   const { username, email, password, location } = req.body;
+
+  const locationResult = await pool.query(
+  'SELECT id FROM locations WHERE name = $1',
+  [location]   // coming from request body
+);
+if (locationResult.rows.length === 0) {
+  return res.status(400).json({ error: 'Invalid location' });
+}
+const location_id = locationResult.rows[0].id;
+
+ const userId = `US_${Date.now()}`;
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      `INSERT INTO users (user_id, username, email, password, location)
+      `INSERT INTO users (user_id, username, email, password, location_id)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [`US_${Date.now()}`, username, email, hashedPassword, location]
+      [userId, username, email, hashedPassword, location_id]
     );
 
     res.json(result.rows[0]);

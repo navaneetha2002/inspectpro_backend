@@ -1,10 +1,13 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors    = require('cors');
 const fs      = require('fs');
 const path    = require('path');
 const pool    = require('./db/db');   // ✅ your existing db.js
+const { authenticateToken } = require('./middleware/auth');
 
-require('dotenv').config();
+
 
 const app = express();
 
@@ -15,7 +18,7 @@ app.use(cors({
     'https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
@@ -23,7 +26,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ✅ ROUTES
 app.use('/api/form',        require('./routes/formRoutes'));
-app.use('/api/questions',   require('./routes/questions'));
+app.use('/api/questions', authenticateToken, require('./routes/questions'));
 app.use('/api/submissions', require('./routes/submissions'));
 app.use('/api/locations',   require('./routes/locations'));
 app.use('/api/categories',  require('./routes/categories'));

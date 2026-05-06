@@ -121,11 +121,11 @@ CREATE INDEX IF NOT EXISTS idx_submission_images_submission_id
 -- SEED DATA — Categories
 -- ─────────────────────────────────────────────────────────────────────────────
 INSERT INTO categories (name, slug, description) VALUES
-  ('Cafeteria',    'kitchen',   'Kitchen area inspection'),
-  ('Washroom',   'washroom',  'Washroom area inspection'),
-  ('Desk',       'desk',      'Desk / workstation area inspection'),
+  ('Cafeteria', 'kitchen', 'Kitchen area inspection'),
+  ('Washroom', 'washroom', 'Washroom area inspection'),
+  ('Desk', 'desk', 'Desk / workstation area inspection'),
   ('Reception', 'frontdesk', 'Front desk / reception inspection')
-ON CONFLICT (slug) DO NOTHING;
+ON CONFLICT (name) DO NOTHING;
 
 -- Locations table
 CREATE TABLE IF NOT EXISTS locations (
