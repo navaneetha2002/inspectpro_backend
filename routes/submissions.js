@@ -7,9 +7,11 @@ router.get('/', async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT fs.id, fs.submission_uuid, fs.submitted_at, c.name AS category_name,
+              l.name AS location_name,
               (SELECT COUNT(*) FROM submission_images si WHERE si.submission_id = fs.id) AS image_count
        FROM form_submissions fs
        JOIN categories c ON c.id = fs.category_id
+       LEFT JOIN locations l ON l.id = fs.location_id
        ORDER BY fs.submitted_at DESC`
     );
     res.json(rows);
@@ -20,9 +22,10 @@ router.get('/', async (req, res, next) => {
 router.get('/:uuid', async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      `SELECT fs.*, c.name AS category_name
+      `SELECT fs.*, c.name AS category_name, l.name AS location_name
        FROM form_submissions fs
        JOIN categories c ON c.id = fs.category_id
+       LEFT JOIN locations l ON l.id = fs.location_id
        WHERE fs.submission_uuid=$1`,
       [req.params.uuid]
     );
