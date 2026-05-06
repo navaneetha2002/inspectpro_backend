@@ -1,9 +1,14 @@
 const express = require('express');
 const cors    = require('cors');
+const fs      = require('fs');
+const path    = require('path');
+const pool    = require('./db/db');   // ✅ your existing db.js
+
 require('dotenv').config();
 
 const app = express();
 
+// ✅ CORS
 app.use(cors({
   origin: [
     'http://localhost:5173',
@@ -11,18 +16,37 @@ app.use(cors({
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type']
-})); // Vite dev server
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ✅ ROUTES
 app.use('/api/form',        require('./routes/formRoutes'));
 app.use('/api/questions',   require('./routes/questions'));
 app.use('/api/submissions', require('./routes/submissions'));
-app.use('/api/locations',    require('./routes/locations'));
-app.use('/api/categories', require('./routes/categories'));
+app.use('/api/locations',   require('./routes/locations'));
+app.use('/api/categories',  require('./routes/categories'));
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
+// ✅ 🔥 ADD THIS BLOCK (IMPORTANT)
+async function initDB() {
+  try {
+    const schemaPath = path.join(__dirname, 'schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+
+    await pool.query(schema);
+
+    console.log('✅ Database schema initialized');
+  } catch (err) {
+    console.error('❌ Error initializing DB:', err);
+  }
+}
+
+// ✅ Start server AFTER DB init
+initDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Backend running on port ${PORT}`);
+  });
 });

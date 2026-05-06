@@ -176,3 +176,19 @@ SELECT l.id, c.id FROM locations l, categories c
 WHERE l.slug = 'sweden'
 AND c.slug IN ('cafeteria','washroom','desk','reception','gaming')
 ON CONFLICT DO NOTHING;
+
+
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+
+  user_id VARCHAR(20) UNIQUE NOT NULL,   -- e.g. US_001
+  username VARCHAR(100) UNIQUE NOT NULL,
+  email VARCHAR(150) UNIQUE NOT NULL,
+
+  password TEXT NOT NULL,
+  role VARCHAR(50) DEFAULT 'user',
+
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
