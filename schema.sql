@@ -121,11 +121,11 @@ CREATE INDEX IF NOT EXISTS idx_submission_images_submission_id
 -- SEED DATA — Categories
 -- ─────────────────────────────────────────────────────────────────────────────
 INSERT INTO categories (name, slug, description) VALUES
-  ('Cafeteria',    'kitchen',   'Kitchen area inspection'),
-  ('Washroom',   'washroom',  'Washroom area inspection'),
-  ('Desk',       'desk',      'Desk / workstation area inspection'),
+  ('Cafeteria', 'kitchen', 'Kitchen area inspection'),
+  ('Washroom', 'washroom', 'Washroom area inspection'),
+  ('Desk', 'desk', 'Desk / workstation area inspection'),
   ('Reception', 'frontdesk', 'Front desk / reception inspection')
-ON CONFLICT (slug) DO NOTHING;
+ON CONFLICT (name) DO NOTHING;
 
 -- Locations table
 CREATE TABLE IF NOT EXISTS locations (
@@ -176,3 +176,19 @@ SELECT l.id, c.id FROM locations l, categories c
 WHERE l.slug = 'sweden'
 AND c.slug IN ('cafeteria','washroom','desk','reception','gaming')
 ON CONFLICT DO NOTHING;
+
+
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+
+  user_id VARCHAR(20) UNIQUE NOT NULL,   -- e.g. US_001
+  username VARCHAR(100) UNIQUE NOT NULL,
+  email VARCHAR(150) UNIQUE NOT NULL,
+
+  password TEXT NOT NULL,
+  role VARCHAR(50) DEFAULT 'user',
+
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

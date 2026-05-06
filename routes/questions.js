@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
+const { authenticateToken } = require('../middleware/auth');
 
 function normaliseQuestions(rows) {
   return rows.map(q => {
@@ -12,7 +13,7 @@ function normaliseQuestions(rows) {
 }
 
 // GET /api/questions
-router.get('/', async (req, res, next) => {
+router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT q.*, c.name AS category_name
@@ -25,7 +26,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/questions/all  (for dropdowns — no category filter)
-router.get('/all', async (req, res, next) => {
+router.get('/all', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'SELECT id, question_text, field_type, options FROM questions ORDER BY order_index'
@@ -35,7 +36,7 @@ router.get('/all', async (req, res, next) => {
 });
 
 // GET /api/questions/:id
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM questions WHERE id=$1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -44,7 +45,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/questions
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateToken, async (req, res, next) => {
   try {
     const {
       category_id, question_text, field_type, options_raw,
@@ -73,7 +74,7 @@ router.post('/', async (req, res, next) => {
 });
 
 // PUT /api/questions/:id
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', authenticateToken, async (req, res, next) => {
   try {
     const {
       category_id, question_text, field_type, options_raw,
@@ -104,7 +105,7 @@ router.put('/:id', async (req, res, next) => {
 });
 
 // DELETE /api/questions/:id
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', authenticateToken, async (req, res, next) => {
   try {
     await pool.query('DELETE FROM questions WHERE id=$1', [req.params.id]);
     res.json({ success: true });
