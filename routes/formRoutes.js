@@ -61,9 +61,18 @@ router.get('/:slug', async (req, res, next) => {
 router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const { slug }  = req.params;
-    const answers   = parseAnswers(req.body.answers);
-    const location_id   = req.body.location_id || null;
+    const { slug }      = req.params;
+    const answers       = parseAnswers(req.body.answers);
+    const locationSlug  = req.body.locationSlug || null;
+
+    let location_id = null;
+    if (locationSlug) {
+      const { rows: locs } = await pool.query(
+        'SELECT id FROM locations WHERE slug=$1',
+        [locationSlug]
+      );
+      if (locs.length) location_id = locs[0].id;
+    }
 
     const { rows: cats } = await pool.query('SELECT * FROM categories WHERE slug=$1', [slug]);
     if (!cats.length) return res.status(404).json({ error: 'Category not found' });
