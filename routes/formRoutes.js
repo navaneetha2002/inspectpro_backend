@@ -102,17 +102,20 @@ router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) 
 });
 
 // GET /api/form/image/:id
+const axios = require('axios');
 router.get('/image/:id', async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT image_data, mimetype, original_name FROM submission_images WHERE id=$1',
-      [req.params.id]
-    );
-    if (!rows.length || !rows[0].image_data)
+    // Proxy the image request to the SAP frontend URL
+    const sapUrl = `https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com/api/form/image/${req.params.id}`;
+    const sapResponse = await axios.get(sapUrl, { responseType: 'arraybuffer' });
+    res.setHeader('Content-Type', sapResponse.headers['content-type'] || 'image/jpeg');
+    res.send(sapResponse.data);
+  } catch (err) {
+    if (err.response && err.response.status === 404) {
       return res.status(404).send('Image not found');
-    res.setHeader('Content-Type', rows[0].mimetype || 'image/jpeg');
-    res.send(rows[0].image_data);
-  } catch (err) { next(err); }
+    }
+    next(err);
+  }
 });
 
 module.exports = router;
