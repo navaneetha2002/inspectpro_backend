@@ -11,11 +11,8 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 async function getRoleByName(name) {
   const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
   return r.rows.length > 0 ? r.rows[0] : null;
-<<<<<<< HEAD
 }
 
-=======
->>>>>>> e3cd73e9f9d6ec3519e585269b723b852f5c104c
 const excelUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (_req, file, cb) => {
