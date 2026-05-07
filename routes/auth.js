@@ -11,6 +11,8 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 async function getRoleByName(name) {
   const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
   return r.rows.length > 0 ? r.rows[0] : null;
+}
+
 const excelUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (_req, file, cb) => {
@@ -372,14 +374,15 @@ router.post(
         const userId         = `US_${String(nextCount).padStart(3, '0')}`;
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        const roleRow = await getRoleByName(role);
         const ins = await pool.query(
-          `INSERT INTO users (user_id, username, email, password, role, location_id)
+          `INSERT INTO users (user_id, username, email, password, role_id, location_id)
            VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING id, user_id, username, email, role, location_id, created_at`,
-          [userId, username, email, hashedPassword, role, location_id]
+           RETURNING id, user_id, username, email, role_id, location_id, created_at`,
+          [userId, username, email, hashedPassword, roleRow.id, location_id]
         );
 
-        results.push({ row: rowNum, username, status: 'success', user: ins.rows[0] });
+        results.push({ row: rowNum, username, status: 'success', user: { ...ins.rows[0], role } });
         insertedCount++;
       } catch (err) {
         nextCount--;
