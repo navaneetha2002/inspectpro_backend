@@ -551,5 +551,5 @@ router.delete('/roles/:name', authenticateToken, authorizeRoles('global_admin'),
     res.status(500).json({ error: 'Failed to delete role' });
   }
 });
-
+}
 module.exports = router;

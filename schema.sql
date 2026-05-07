@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS form_submissions (
   id               SERIAL PRIMARY KEY,
   submission_uuid  UUID DEFAULT uuid_generate_v4() UNIQUE,
   category_id      INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  location_id      INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
   answers          JSONB NOT NULL DEFAULT '{}',
   submitted_at     TIMESTAMP DEFAULT NOW()
 );
@@ -111,6 +113,9 @@ CREATE INDEX IF NOT EXISTS idx_questions_conditional
 -- Speed up submission lookups by UUID (used in thank-you page and detail view)
 CREATE INDEX IF NOT EXISTS idx_submissions_uuid
   ON form_submissions(submission_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_category
+  ON form_submissions(category_id);
 
 -- Speed up fetching images for a submission
 CREATE INDEX IF NOT EXISTS idx_submission_images_submission_id
@@ -171,14 +176,14 @@ ON CONFLICT DO NOTHING;
 INSERT INTO location_categories (location_id, category_id)
 SELECT l.id, c.id FROM locations l, categories c
 WHERE l.slug = 'indore'
-AND c.slug IN ('washroom','desk','reception','wellness')
+AND c.slug IN ('washroom','desk','reception')
 ON CONFLICT DO NOTHING;
 
 -- Sweden: all + gaming area
 INSERT INTO location_categories (location_id, category_id)
 SELECT l.id, c.id FROM locations l, categories c
 WHERE l.slug = 'sweden'
-AND c.slug IN ('cafeteria','washroom','desk','reception','gaming')
+AND c.slug IN ('cafeteria','washroom','desk','reception')
 ON CONFLICT DO NOTHING;
 
 
@@ -319,27 +324,4 @@ INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r, permissions p
 WHERE r.name = 'user'
 AND p.name IN ('create_submission','view_submissions')
-ON CONFLICT DO NOTHING;
--- local_admin
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'local_admin', id FROM permissions
-WHERE name IN ('view_submissions','create_submission','delete_submission','view_images','manage_locations')
-ON CONFLICT DO NOTHING;
-
--- inspector
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'inspector', id FROM permissions
-WHERE name IN ('create_submission','view_submissions','view_images')
-ON CONFLICT DO NOTHING;
-
--- coordinator
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'coordinator', id FROM permissions
-WHERE name IN ('view_submissions','view_images')
-ON CONFLICT DO NOTHING;
-
--- user
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'user', id FROM permissions
-WHERE name IN ('create_submission','view_submissions')
 ON CONFLICT DO NOTHING;
