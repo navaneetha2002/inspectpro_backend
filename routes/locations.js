@@ -88,6 +88,17 @@ router.post('/:id/categories', async (req, res, next) => {
     res.json({ success: true });
   } catch (err) { next(err); }
 });
+// GET /api/locations/:id — get single location by id
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM locations WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Location not found' });
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+});
 
 // DELETE /api/locations/:id/categories/:categoryId — remove category from location
 router.delete('/:id/categories/:categoryId', async (req, res, next) => {

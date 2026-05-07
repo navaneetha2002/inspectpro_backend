@@ -1,19 +1,45 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 // GET /api/submissions
-router.get('/', async (req, res, next) => {
+router.get('/', authenticateToken, async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT fs.id, fs.submission_uuid, fs.submitted_at, c.name AS category_name,
-              l.name AS location_name,
-              (SELECT COUNT(*) FROM submission_images si WHERE si.submission_id = fs.id) AS image_count
-       FROM form_submissions fs
-       JOIN categories c ON c.id = fs.category_id
-       LEFT JOIN locations l ON l.id = fs.location_id
-       ORDER BY fs.submitted_at DESC`
-    );
+    const isAdmin = req.user.role === 'global_admin';
+
+    let rows;
+
+    if (isAdmin) {
+      // Admin — all submissions + who submitted
+      ({ rows } = await pool.query(
+        `SELECT fs.*, c.name AS category_name, l.name AS location_name,
+                u.username AS submitted_by,
+                COUNT(si.id) AS image_count
+         FROM form_submissions fs
+         LEFT JOIN categories c ON c.id = fs.category_id
+         LEFT JOIN locations l ON l.id = fs.location_id
+         LEFT JOIN submission_images si ON si.submission_id = fs.id
+         LEFT JOIN users u ON u.id = fs.user_id
+         GROUP BY fs.id, c.name, l.name, u.username
+         ORDER BY fs.submitted_at DESC`
+      ));
+    } else {
+      // Regular user — only their own submissions
+      ({ rows } = await pool.query(
+        `SELECT fs.*, c.name AS category_name, l.name AS location_name,
+                COUNT(si.id) AS image_count
+         FROM form_submissions fs
+         LEFT JOIN categories c ON c.id = fs.category_id
+         LEFT JOIN locations l ON l.id = fs.location_id
+         LEFT JOIN submission_images si ON si.submission_id = fs.id
+         WHERE fs.user_id = $1
+         GROUP BY fs.id, c.name, l.name
+         ORDER BY fs.submitted_at DESC`,
+        [req.user.id]
+      ));
+    }
+
     res.json(rows);
   } catch (err) { next(err); }
 });

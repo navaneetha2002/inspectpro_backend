@@ -4,6 +4,7 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const pool    = require('../db/db');
+const { optionalAuth } = require('../middleware/auth');
 
 function parseAnswers(raw) {
   if (!raw) return {};
@@ -58,12 +59,13 @@ router.get('/:slug', async (req, res, next) => {
 });
 
 // POST /api/form/:slug/submit
-router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) => {
+router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (req, res, next) => {
   const client = await pool.connect();
   try {
     const { slug }      = req.params;
     const answers       = parseAnswers(req.body.answers);
     const locationSlug  = req.body.locationSlug || null;
+    const userId        = req.user ? req.user.id : null;
 
     let location_id = null;
     if (locationSlug) {
@@ -80,9 +82,9 @@ router.post('/:slug/submit', upload.array('images', 10), async (req, res, next) 
     await client.query('BEGIN');
 
     const { rows: sub } = await client.query(
-      `INSERT INTO form_submissions (category_id, location_id, answers)
-       VALUES ($1, $2, $3) RETURNING id, submission_uuid`,
-      [cats[0].id, location_id, JSON.stringify(answers)]
+      `INSERT INTO form_submissions (category_id, location_id, answers, user_id)
+       VALUES ($1, $2, $3, $4) RETURNING id, submission_uuid`,
+      [cats[0].id, location_id, JSON.stringify(answers), userId]
     );
     const submissionId   = sub[0].id;
     const submissionUuid = sub[0].submission_uuid;
