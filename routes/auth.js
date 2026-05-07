@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const xlsx = require('xlsx');
 const pool = require('../db/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
@@ -9,6 +11,24 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 async function getRoleByName(name) {
   const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
   return r.rows.length > 0 ? r.rows[0] : null;
+}
+
+const excelUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    const ok =
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.mimetype === 'application/vnd.ms-excel' ||
+      /\.(xlsx|xls)$/i.test(file.originalname);
+    ok ? cb(null, true) : cb(new Error('Only .xlsx / .xls files are allowed'));
+  },
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+// Helper: check role exists in the DB roles table
+async function roleExists(name) {
+  const r = await pool.query('SELECT 1 FROM roles WHERE name = $1', [name]);
+  return r.rows.length > 0;
 }
 
 // ─── REGISTER (requires JWT authentication) ──────────────────────────────────
@@ -39,7 +59,9 @@ router.post(
         location_id = locationResult.rows[0].id;
       }
 
-      const userId = `US_${Date.now()}`;
+      const countResult = await pool.query('SELECT COUNT(*) FROM users');
+      const count       = parseInt(countResult.rows[0].count) + 1;
+      const userId      = `US_${String(count).padStart(3, '0')}`;
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const result = await pool.query(
@@ -141,7 +163,9 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
       location_id = locationResult.rows[0].id;
     }
 
-    const userId = `US_${Date.now()}`;
+    const countResult = await pool.query('SELECT COUNT(*) FROM users');
+    const count       = parseInt(countResult.rows[0].count) + 1;
+    const userId      = `US_${String(count).padStart(3, '0')}`;
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
@@ -179,6 +203,206 @@ router.get('/users', authenticateToken, authorizeRoles('global_admin'), async (r
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
+
+// ─── DOWNLOAD BULK UPLOAD TEMPLATE (global_admin only) ───────────────────────
+// GET /api/auth/users/bulk/template
+router.get('/users/bulk/template', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
+  try {
+    const rolesRes = await pool.query('SELECT name FROM roles ORDER BY name');
+    const roleNames = rolesRes.rows.map(r => r.name).join(', ');
+
+    const locsRes = await pool.query('SELECT name FROM locations ORDER BY name');
+    const locationNames = locsRes.rows.map(r => r.name).join(', ');
+
+    const wb = xlsx.utils.book_new();
+
+    const templateRows = [
+      {
+        username: 'john_doe',
+        email: 'john@example.com',
+        password: 'Pass@123',
+        role: 'inspector',
+        location: locsRes.rows[0]?.name || '',
+      },
+      {
+        username: 'jane_smith',
+        email: 'jane@example.com',
+        password: 'Pass@123',
+        role: 'local_admin',
+        location: locsRes.rows[0]?.name || '',
+      },
+    ];
+
+    const ws = xlsx.utils.json_to_sheet(templateRows, {
+      header: ['username', 'email', 'password', 'role', 'location'],
+    });
+
+    // Column widths
+    ws['!cols'] = [
+      { wch: 20 },
+      { wch: 28 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 18 },
+    ];
+
+    xlsx.utils.book_append_sheet(wb, ws, 'Users');
+
+    // Notes sheet so the admin knows valid values
+    const notesRows = [
+      { field: 'username', notes: 'Required. Must be unique.' },
+      { field: 'email',    notes: 'Required. Must be unique.' },
+      { field: 'password', notes: 'Required. Plain text — will be hashed on import.' },
+      { field: 'role',     notes: `Required. Valid values: ${roleNames}` },
+      { field: 'location', notes: `Optional. Valid values: ${locationNames}` },
+    ];
+    const wsNotes = xlsx.utils.json_to_sheet(notesRows, { header: ['field', 'notes'] });
+    wsNotes['!cols'] = [{ wch: 12 }, { wch: 60 }];
+    xlsx.utils.book_append_sheet(wb, wsNotes, 'Instructions');
+
+    const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader('Content-Disposition', 'attachment; filename="bulk_users_template.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate template' });
+  }
+});
+
+// ─── BULK CREATE USERS via Excel (global_admin only) ─────────────────────────
+// POST /api/auth/users/bulk
+// Form-data key: "file"  (.xlsx or .xls)
+// Required columns: username | email | password | role
+// Optional column : location
+router.post(
+  '/users/bulk',
+  authenticateToken,
+  authorizeRoles('global_admin'),
+  (req, res, next) => {
+    excelUpload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      next();
+    });
+  },
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Excel file is required — set form-data key to "file" and type to File' });
+    }
+
+    // ── Parse workbook ──────────────────────────────────────────────────────
+    let rows;
+    try {
+      const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+    } catch {
+      return res.status(400).json({ error: 'Could not parse Excel file' });
+    }
+
+    if (!rows.length) {
+      return res.status(400).json({ error: 'The sheet has no data rows' });
+    }
+
+    // Normalise header keys: trim + lowercase
+    const normalise = (raw) => {
+      const out = {};
+      for (const k of Object.keys(raw)) {
+        const v = raw[k];
+        out[k.trim().toLowerCase()] = typeof v === 'string' ? v.trim() : String(v).trim();
+      }
+      return out;
+    };
+
+    // Validate required columns are present
+    const firstRow = normalise(rows[0]);
+    const detectedCols = Object.keys(firstRow);
+    const requiredCols = ['username', 'email', 'password', 'role'];
+    const missingCols = requiredCols.filter(c => !detectedCols.includes(c));
+    if (missingCols.length > 0) {
+      return res.status(400).json({
+        error: 'Missing required columns in Excel file',
+        missing_columns: missingCols,
+        detected_columns: detectedCols,
+        expected_columns: [...requiredCols, 'location (optional)'],
+      });
+    }
+
+    // ── Pre-fetch reference data once ──────────────────────────────────────
+    const [rolesRes, locsRes, countRes] = await Promise.all([
+      pool.query('SELECT name FROM roles'),
+      pool.query('SELECT id, name FROM locations'),
+      pool.query('SELECT COUNT(*) FROM users'),
+    ]);
+
+    const validRoles  = new Set(rolesRes.rows.map((r) => r.name));
+    const locationMap = new Map(locsRes.rows.map((l) => [l.name.toLowerCase(), l.id]));
+    let nextCount     = parseInt(countRes.rows[0].count, 10);
+
+    // ── Process each row ────────────────────────────────────────────────────
+    const results = [];
+    let insertedCount = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row    = normalise(rows[i]);
+      const rowNum = i + 2; // row 1 = header
+      const { username, email, password, role, location } = row;
+
+      // Validation
+      if (!username || !email || !password || !role) {
+        results.push({ row: rowNum, username: username || '', status: 'failed', reason: 'username, email, password and role are required' });
+        continue;
+      }
+      if (!validRoles.has(role)) {
+        results.push({ row: rowNum, username, status: 'failed', reason: `Invalid role "${role}". Valid: ${[...validRoles].join(', ')}` });
+        continue;
+      }
+
+      let location_id = null;
+      if (location) {
+        location_id = locationMap.get(location.toLowerCase());
+        if (!location_id) {
+          results.push({ row: rowNum, username, status: 'failed', reason: `Invalid location "${location}"` });
+          continue;
+        }
+      }
+
+      // Insert
+      try {
+        nextCount++;
+        const userId         = `US_${String(nextCount).padStart(3, '0')}`;
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const roleRow = await getRoleByName(role);
+        const ins = await pool.query(
+          `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, user_id, username, email, role_id, location_id, created_at`,
+          [userId, username, email, hashedPassword, roleRow.id, location_id]
+        );
+
+        results.push({ row: rowNum, username, status: 'success', user: { ...ins.rows[0], role } });
+        insertedCount++;
+      } catch (err) {
+        nextCount--;
+        results.push({
+          row: rowNum,
+          username,
+          status: 'failed',
+          reason: err.code === '23505' ? 'Username or email already exists' : 'Database error',
+        });
+      }
+    }
+
+    res.status(insertedCount > 0 ? 201 : 400).json({
+      total: rows.length,
+      inserted: insertedCount,
+      failed: rows.length - insertedCount,
+      results,
+    });
+  }
+);
 
 // ─── UPDATE USER ROLE  (global_admin only) ───────────────────────────────────
 // PUT /api/auth/users/:id/role
