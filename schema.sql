@@ -125,7 +125,7 @@ INSERT INTO categories (name, slug, description) VALUES
   ('Washroom', 'washroom', 'Washroom area inspection'),
   ('Desk', 'desk', 'Desk / workstation area inspection'),
   ('Reception', 'frontdesk', 'Front desk / reception inspection')
-ON CONFLICT (name) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- Locations table
 CREATE TABLE IF NOT EXISTS locations (
@@ -148,12 +148,16 @@ CREATE TABLE IF NOT EXISTS location_categories (
 ALTER TABLE form_submissions
   ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL;
 
+-- Ensure slug and description columns exist (in case table was created without them)
+ALTER TABLE locations ADD COLUMN IF NOT EXISTS slug        VARCHAR(100) UNIQUE;
+ALTER TABLE locations ADD COLUMN IF NOT EXISTS description TEXT;
+
 -- Seed locations
 INSERT INTO locations (name, slug, description) VALUES
   ('Bangalore', 'bangalore', 'Tarento Bangalore office'),
   ('Indore',    'indore',    'Tarento Indore office'),
   ('Sweden',    'sweden',    'Tarento Sweden office')
-ON CONFLICT (slug) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- Seed location_categories
 -- Bangalore: all 4 categories
@@ -178,6 +182,30 @@ AND c.slug IN ('cafeteria','washroom','desk','reception','gaming')
 ON CONFLICT DO NOTHING;
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 5. ROLES
+--    Stores all valid roles. global_admin can add new roles at runtime.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS roles (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL UNIQUE,
+  description TEXT,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Seed default roles
+INSERT INTO roles (name, description) VALUES
+  ('global_admin',  'Full system access; can manage users and roles'),
+  ('local_admin',   'Admin for a specific location'),
+  ('inspector',     'Performs inspections and submits forms'),
+  ('coordinator',   'Coordinates inspection activities'),
+  ('user',          'Standard read-only / self-service access')
+ON CONFLICT DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 6. USERS
+-- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
 
@@ -186,9 +214,23 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(150) UNIQUE NOT NULL,
 
   password TEXT NOT NULL,
-  role VARCHAR(50) DEFAULT 'user',
+  role VARCHAR(100) DEFAULT 'user' REFERENCES roles(name) ON UPDATE CASCADE ON DELETE SET DEFAULT,
 
   location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
 
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Drop old static CHECK constraint if it exists (for existing databases)
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+
+-- Seed a default global_admin (password: Admin@123 — change immediately)
+INSERT INTO users (user_id, username, email, password, role)
+VALUES (
+  'US_GLOBAL_ADMIN',
+  'global_admin',
+  'admin@inspectpro.com',
+  '$2b$10$v3LIiVZ.F0VqpELHRfIIBuQnUSClbaxEjFpbhXOiWrJ3KT5t3u0RO',  -- bcrypt of Admin@123
+  'global_admin'
+)
+ON CONFLICT DO NOTHING;
