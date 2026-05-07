@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../db/db'); // your pg connection
 
+
 // REGISTER
 router.post('/register', async (req, res) => {
 
@@ -18,10 +19,13 @@ if (locationResult.rows.length === 0) {
 }
 const location_id = locationResult.rows[0].id;
 
- const userId = `US_${Date.now()}`;
-
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Get current count of users to generate sequential ID
+    const countResult = await pool.query('SELECT COUNT(*) FROM users');
+    const count       = parseInt(countResult.rows[0].count) + 1;
+    const userId      = `US_${String(count).padStart(3, '0')}`;  // US_001, US_002...
 
     const result = await pool.query(
       `INSERT INTO users (user_id, username, email, password, location_id)
@@ -39,12 +43,12 @@ const location_id = locationResult.rows[0].id;
 
 // LOGIN
 router.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { email, password } = req.body;
 
   try {
     const user = await pool.query(
-      'SELECT * FROM users WHERE username = $1',
-      [username]
+      'SELECT u.*, l.name as location_name FROM users u LEFT JOIN locations l ON u.location_id = l.id WHERE u.email = $1',
+      [email]
     );
 
     if (user.rows.length === 0) {
@@ -58,7 +62,13 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.rows[0].id, role: user.rows[0].role },
+      { 
+        id: user.rows[0].id, 
+        email: user.rows[0].email,
+        role: user.rows[0].role,
+        location_id: user.rows[0].location_id,
+        location: user.rows[0].location_name
+      },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
@@ -67,6 +77,48 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// GET ALL USERS
+router.get('/users', async (req, res) => {
+  try {
+    const users = await pool.query(`
+      SELECT u.id, u.user_id, u.username, u.email, u.role, u.location_id, 
+             l.name as location_name, u.created_at
+      FROM users u 
+      LEFT JOIN locations l ON u.location_id = l.id 
+      ORDER BY u.created_at DESC
+    `);
+
+    res.json(users.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// GET SPECIFIC USER
+router.get('/users/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const user = await pool.query(`
+      SELECT u.id, u.user_id, u.username, u.email, u.role, u.location_id,
+             l.name as location_name, u.created_at
+      FROM users u 
+      LEFT JOIN locations l ON u.location_id = l.id 
+      WHERE u.id = $1 OR u.user_id = $1
+    `, [id]);
+
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch user details' });
   }
 });
 
