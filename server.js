@@ -30,7 +30,8 @@ app.use('/api/questions', authenticateToken, require('./routes/questions'));
 app.use('/api/submissions', require('./routes/submissions'));
 app.use('/api/locations',   require('./routes/locations'));
 app.use('/api/categories',  require('./routes/categories'));
-app.use('/api/auth', require('./routes/auth'));
+app.use('/api/auth',        require('./routes/auth'));
+app.use('/api/permissions', require('./routes/permissions'));
 
 const PORT = process.env.PORT || 3000;
 

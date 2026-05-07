@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(150) UNIQUE NOT NULL,
 
   password TEXT NOT NULL,
-  role VARCHAR(100) DEFAULT 'user' REFERENCES roles(name) ON UPDATE CASCADE ON DELETE SET DEFAULT,
+  role_id INTEGER REFERENCES roles(id) ON DELETE SET NULL,
 
   location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
 
@@ -224,13 +224,122 @@ CREATE TABLE IF NOT EXISTS users (
 -- Drop old static CHECK constraint if it exists (for existing databases)
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 
+-- Migration: add role_id column for existing databases
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id INTEGER REFERENCES roles(id) ON DELETE SET NULL;
+
+-- Migration: populate role_id from existing role name column
+UPDATE users SET role_id = roles.id FROM roles WHERE users.role = roles.name AND users.role_id IS NULL;
+
+-- Add user_id to form_submissions (references users, so must come after users table)
+ALTER TABLE form_submissions
+  ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
 -- Seed a default global_admin (password: Admin@123 — change immediately)
-INSERT INTO users (user_id, username, email, password, role)
-VALUES (
-  'US_GLOBAL_ADMIN',
-  'global_admin',
-  'admin@inspectpro.com',
-  '$2b$10$v3LIiVZ.F0VqpELHRfIIBuQnUSClbaxEjFpbhXOiWrJ3KT5t3u0RO',  -- bcrypt of Admin@123
-  'global_admin'
-)
+INSERT INTO users (user_id, username, email, password, role_id)
+SELECT 'US_GLOBAL_ADMIN', 'global_admin', 'admin@inspectpro.com',
+       '$2b$10$v3LIiVZ.F0VqpELHRfIIBuQnUSClbaxEjFpbhXOiWrJ3KT5t3u0RO', id
+FROM roles WHERE name = 'global_admin'
+ON CONFLICT DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 7. PERMISSIONS
+--    Defines all available permissions in the system.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS permissions (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL UNIQUE,  -- e.g. 'view_submissions'
+  description TEXT,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Seed default permissions
+INSERT INTO permissions (name, description) VALUES
+  ('view_submissions',    'Can view form submissions'),
+  ('create_submission',   'Can submit inspection forms'),
+  ('delete_submission',   'Can delete submissions'),
+  ('manage_users',        'Can create, update and delete users'),
+  ('manage_roles',        'Can create and delete roles'),
+  ('manage_locations',    'Can create, update and delete locations'),
+  ('manage_categories',   'Can create, update and delete categories'),
+  ('manage_questions',    'Can create, update and delete questions'),
+  ('view_images',         'Can view submission images')
+ON CONFLICT DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 8. ROLE PERMISSIONS
+--    Maps which permissions each role has.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id            SERIAL PRIMARY KEY,
+  role_id       INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+  UNIQUE(role_id, permission_id)
+);
+
+-- Migration: drop old role_name constraints so we can make column nullable
+ALTER TABLE role_permissions DROP CONSTRAINT IF EXISTS role_permissions_role_name_permission_id_key;
+ALTER TABLE role_permissions DROP CONSTRAINT IF EXISTS role_permissions_role_name_fkey;
+ALTER TABLE role_permissions ALTER COLUMN role_name DROP NOT NULL;
+-- Migration: add role_id column if table already exists with role_name
+ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE;
+-- Migration: populate role_id from role_name if needed
+UPDATE role_permissions rp SET role_id = r.id FROM roles r WHERE r.name = rp.role_name AND rp.role_id IS NULL;
+
+-- Seed default role_permissions
+-- global_admin gets all permissions
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = 'global_admin'
+ON CONFLICT DO NOTHING;
+
+-- local_admin
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'local_admin'
+AND p.name IN ('view_submissions','create_submission','delete_submission','view_images','manage_locations')
+ON CONFLICT DO NOTHING;
+
+-- inspector
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'inspector'
+AND p.name IN ('create_submission','view_submissions','view_images')
+ON CONFLICT DO NOTHING;
+
+-- coordinator
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'coordinator'
+AND p.name IN ('view_submissions','view_images')
+ON CONFLICT DO NOTHING;
+
+-- user
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'user'
+AND p.name IN ('create_submission','view_submissions')
+ON CONFLICT DO NOTHING;
+-- local_admin
+INSERT INTO role_permissions (role_name, permission_id)
+SELECT 'local_admin', id FROM permissions
+WHERE name IN ('view_submissions','create_submission','delete_submission','view_images','manage_locations')
+ON CONFLICT DO NOTHING;
+
+-- inspector
+INSERT INTO role_permissions (role_name, permission_id)
+SELECT 'inspector', id FROM permissions
+WHERE name IN ('create_submission','view_submissions','view_images')
+ON CONFLICT DO NOTHING;
+
+-- coordinator
+INSERT INTO role_permissions (role_name, permission_id)
+SELECT 'coordinator', id FROM permissions
+WHERE name IN ('view_submissions','view_images')
+ON CONFLICT DO NOTHING;
+
+-- user
+INSERT INTO role_permissions (role_name, permission_id)
+SELECT 'user', id FROM permissions
+WHERE name IN ('create_submission','view_submissions')
 ON CONFLICT DO NOTHING;

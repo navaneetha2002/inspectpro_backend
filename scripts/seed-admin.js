@@ -8,8 +8,8 @@
 const bcrypt = require('bcrypt');
 const pool   = require('../db/db');
 
-const ADMIN_USERNAME = 'global_admin';
-const ADMIN_EMAIL    = 'admin@inspectpro.com';
+const ADMIN_USERNAME = 'global_admin1';
+const ADMIN_EMAIL    = 'admin1@inspectpro.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin@123';
 
 async function run() {
@@ -46,20 +46,25 @@ async function run() {
     // 4. Hash password and upsert global_admin
     const hashed = await bcrypt.hash(ADMIN_PASSWORD, 10);
 
+    const { rows: roleRows } = await client.query(`SELECT id FROM roles WHERE name = 'global_admin'`);
+    if (!roleRows.length) throw new Error('global_admin role not found — run schema first');
+    const roleId = roleRows[0].id;
+
+    const userId = `US_ADM_${Date.now()}`.slice(0, 20);
     const result = await client.query(`
-      INSERT INTO users (user_id, username, email, password, role)
-      VALUES ('US_GLOBAL_ADMIN', $1, $2, $3, 'global_admin')
+      INSERT INTO users (user_id, username, email, password, role_id)
+      VALUES ($4, $1, $2, $3, $5)
       ON CONFLICT (username) DO UPDATE
-        SET role     = 'global_admin',
+        SET role_id  = EXCLUDED.role_id,
             password = EXCLUDED.password
-      RETURNING id, username, email, role
-    `, [ADMIN_USERNAME, ADMIN_EMAIL, hashed]);
+      RETURNING id, username, email, role_id
+    `, [ADMIN_USERNAME, ADMIN_EMAIL, hashed, userId, roleId]);
 
     console.log('\nglobal_admin user ready:');
     console.log('  id       :', result.rows[0].id);
     console.log('  username :', result.rows[0].username);
     console.log('  email    :', result.rows[0].email);
-    console.log('  role     :', result.rows[0].role);
+    console.log('  role_id  :', result.rows[0].role_id);
     console.log('  password :', ADMIN_PASSWORD);
     console.log('\nChange the password after first login!\n');
 
