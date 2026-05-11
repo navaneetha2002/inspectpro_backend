@@ -17,7 +17,7 @@ app.use(cors({
     'http://localhost:5173',
     'https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -32,6 +32,7 @@ app.use('/api/locations',   require('./routes/locations'));
 app.use('/api/categories',  require('./routes/categories'));
 app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/permissions', require('./routes/permissions'));
+app.use('/api/schedules',  require('./routes/schedules'));
 
 const PORT = process.env.PORT || 3000;
 

@@ -278,14 +278,8 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   UNIQUE(role_id, permission_id)
 );
 
--- Migration: drop old role_name constraints so we can make column nullable
-ALTER TABLE role_permissions DROP CONSTRAINT IF EXISTS role_permissions_role_name_permission_id_key;
-ALTER TABLE role_permissions DROP CONSTRAINT IF EXISTS role_permissions_role_name_fkey;
-ALTER TABLE role_permissions ALTER COLUMN role_name DROP NOT NULL;
--- Migration: add role_id column if table already exists with role_name
+-- Migration: add role_id column if table already exists
 ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE;
--- Migration: populate role_id from role_name if needed
-UPDATE role_permissions rp SET role_id = r.id FROM roles r WHERE r.name = rp.role_name AND rp.role_id IS NULL;
 
 -- Seed default role_permissions
 -- global_admin gets all permissions
@@ -320,26 +314,64 @@ SELECT r.id, p.id FROM roles r, permissions p
 WHERE r.name = 'user'
 AND p.name IN ('create_submission','view_submissions')
 ON CONFLICT DO NOTHING;
--- local_admin
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'local_admin', id FROM permissions
-WHERE name IN ('view_submissions','create_submission','delete_submission','view_images','manage_locations')
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 9. SCHEDULE PERMISSIONS
+-- ─────────────────────────────────────────────────────────────────────────────
+INSERT INTO permissions (name, description) VALUES
+  ('view_schedules',   'Can view inspection schedules'),
+  ('create_schedule',  'Can create and assign inspection schedules'),
+  ('manage_schedules', 'Can edit and delete any inspection schedule')
 ON CONFLICT DO NOTHING;
 
--- inspector
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'inspector', id FROM permissions
-WHERE name IN ('create_submission','view_submissions','view_images')
+-- global_admin already gets all permissions via the wildcard seed above
+
+-- local_admin: full schedule control
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'local_admin'
+AND p.name IN ('view_schedules', 'create_schedule', 'manage_schedules')
 ON CONFLICT DO NOTHING;
 
--- coordinator
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'coordinator', id FROM permissions
-WHERE name IN ('view_submissions','view_images')
+-- inspector: can only view their assigned schedules
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'inspector'
+AND p.name IN ('view_schedules')
 ON CONFLICT DO NOTHING;
 
--- user
-INSERT INTO role_permissions (role_name, permission_id)
-SELECT 'user', id FROM permissions
-WHERE name IN ('create_submission','view_submissions')
+-- coordinator: can view schedules
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.name = 'coordinator'
+AND p.name IN ('view_schedules', 'create_schedule')
 ON CONFLICT DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 10. INSPECTION SCHEDULES
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS inspection_schedules (
+  id            SERIAL PRIMARY KEY,
+  title         VARCHAR(255) NOT NULL,
+  category_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  assigned_to   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_by    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scheduled_at  TIMESTAMP NOT NULL,
+  due_at        TIMESTAMP,
+  status        VARCHAR(50) DEFAULT 'pending',  -- pending | in_progress | completed | cancelled
+  notes         TEXT,
+  submission_id INTEGER REFERENCES form_submissions(id) ON DELETE SET NULL,
+  created_at    TIMESTAMP DEFAULT NOW(),
+  updated_at    TIMESTAMP DEFAULT NOW()
+);
+ALTER TABLE inspection_schedules
+  ADD COLUMN IF NOT EXISTS attendee_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_schedules_attendee_id ON inspection_schedules(attendee_id);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to  ON inspection_schedules(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at ON inspection_schedules(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_status       ON inspection_schedules(status);

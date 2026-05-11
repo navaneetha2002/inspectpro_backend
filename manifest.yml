@@ -1,11 +1,13 @@
 applications:
   - name: inspectpro-backend
-    memory: 256M
+    memory: 512M
     instances: 1
+    random-route: true
     buildpacks:
       - nodejs_buildpack
     command: node server.js
     env:
       NODE_ENV: production
+      JWT_SECRET: CHANGE_ME
     services:
       - PostSQLtest
