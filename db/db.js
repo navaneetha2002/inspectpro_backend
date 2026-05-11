@@ -17,7 +17,9 @@ function getDbConfig() {
         database: creds.dbname    || creds.name,
         user:     creds.username  || creds.user,
         password: creds.password,
-        ssl:      { rejectUnauthorized: false, ca: creds.sslrootcert, },  // BTP requires SSL
+        ssl:      creds.sslrootcert
+                    ? { rejectUnauthorized: false, ca: creds.sslrootcert }
+                    : { rejectUnauthorized: false },
       };
     }
   }

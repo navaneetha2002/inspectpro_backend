@@ -38,8 +38,30 @@ const optionalAuth = (req, res, next) => {
   });
 };
 
+// Permission-based middleware — checks the role_permissions table in the DB
+// Usage: authorizePermission('create_schedule')
+const authorizePermission = (permissionName) => async (req, res, next) => {
+  try {
+    const pool = require('../db/db');
+    const { rows } = await pool.query(
+      `SELECT 1 FROM role_permissions rp
+       JOIN permissions p ON p.id = rp.permission_id
+       JOIN roles r ON r.id = rp.role_id
+       WHERE r.name = $1 AND p.name = $2`,
+      [req.user.role, permissionName]
+    );
+    if (rows.length === 0) {
+      return res.status(403).json({ error: `Forbidden: requires '${permissionName}' permission` });
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   authenticateToken,
   authorizeRoles,
-  optionalAuth
+  optionalAuth,
+  authorizePermission
 };

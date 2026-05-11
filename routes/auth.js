@@ -184,7 +184,7 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
 
 // ─── LIST ALL USERS  (global_admin only) ─────────────────────────────────────
 // GET /api/auth/users
-router.get('/users', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
+router.get('/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT u.id, u.user_id, u.username, u.email, u.role,
