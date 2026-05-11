@@ -4,7 +4,7 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const pool    = require('../db/db');
-const { optionalAuth } = require('../middleware/auth');
+const { optionalAuth, requireAuth } = require('../middleware/auth');
 
 function parseAnswers(raw) {
   if (!raw) return {};
@@ -32,6 +32,58 @@ router.get('/categories', async (req, res, next) => {
     const { rows } = await pool.query('SELECT * FROM categories ORDER BY id');
     res.json(rows);
   } catch (err) { next(err); }
+});
+
+// GET /api/form/my-submissions?location=<slug>
+router.get('/my-submissions', optionalAuth, async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { location } = req.query;
+
+    let query, params;
+    if (location) {
+      query = `
+        SELECT fs.submission_uuid, fs.submitted_at, c.name AS category_name, c.slug
+        FROM form_submissions fs
+        JOIN categories c ON c.id = fs.category_id
+        JOIN locations  l ON l.id = fs.location_id
+        WHERE fs.user_id = $1 AND l.slug = $2
+        ORDER BY fs.submitted_at DESC
+      `;
+      params = [userId, location];
+    } else {
+      query = `
+        SELECT fs.submission_uuid, fs.submitted_at, c.name AS category_name, c.slug
+        FROM form_submissions fs
+        JOIN categories c ON c.id = fs.category_id
+        WHERE fs.user_id = $1
+        ORDER BY fs.submitted_at DESC
+      `;
+      params = [userId];
+    }
+
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET /api/form/image/:id
+const axios = require('axios');
+router.get('/image/:id', async (req, res, next) => {
+  try {
+    // Proxy the image request to the SAP frontend URL
+    const sapUrl = `https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com/api/form/image/${req.params.id}`;
+    const sapResponse = await axios.get(sapUrl, { responseType: 'arraybuffer' });
+    res.setHeader('Content-Type', sapResponse.headers['content-type'] || 'image/jpeg');
+    res.send(sapResponse.data);
+  } catch (err) {
+    if (err.response && err.response.status === 404) {
+      return res.status(404).send('Image not found');
+    }
+    next(err);
+  }
 });
 
 // GET /api/form/:slug?group=1
@@ -112,21 +164,59 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
   }
 });
 
-// GET /api/form/image/:id
-const axios = require('axios');
-router.get('/image/:id', async (req, res, next) => {
+// GET /api/form/:slug/my-submission?schedule_id=X
+// If schedule_id is given and the schedule already has a linked submission, return it as read-only.
+// Returns 404 when no submission is linked (caller should open the form).
+router.get('/:slug/my-submission', optionalAuth, async (req, res, next) => {
   try {
-    // Proxy the image request to the SAP frontend URL
-    const sapUrl = `https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com/api/form/image/${req.params.id}`;
-    const sapResponse = await axios.get(sapUrl, { responseType: 'arraybuffer' });
-    res.setHeader('Content-Type', sapResponse.headers['content-type'] || 'image/jpeg');
-    res.send(sapResponse.data);
-  } catch (err) {
-    if (err.response && err.response.status === 404) {
-      return res.status(404).send('Image not found');
-    }
-    next(err);
-  }
+    const { schedule_id } = req.query;
+    if (!schedule_id) return res.status(404).json({ error: 'No submission found' });
+
+    const { rows: schedRows } = await pool.query(
+      'SELECT submission_id FROM inspection_schedules WHERE id = $1',
+      [schedule_id]
+    );
+    if (!schedRows.length) return res.status(404).json({ error: 'Schedule not found' });
+
+    const { submission_id } = schedRows[0];
+    if (!submission_id) return res.status(404).json({ error: 'No submission linked to this schedule' });
+
+    const { rows: subRows } = await pool.query(
+      `SELECT fs.*, c.name AS category_name, l.name AS location_name
+       FROM form_submissions fs
+       LEFT JOIN categories c ON c.id = fs.category_id
+       LEFT JOIN locations  l ON l.id = fs.location_id
+       WHERE fs.id = $1`,
+      [submission_id]
+    );
+    if (!subRows.length) return res.status(404).json({ error: 'Submission not found' });
+
+    const submission = subRows[0];
+
+    const { rows: images } = await pool.query(
+      'SELECT id, original_name, mimetype, uploaded_at FROM submission_images WHERE submission_id = $1',
+      [submission.id]
+    );
+
+    const { rows: questions } = await pool.query(
+      'SELECT id, question_text FROM questions WHERE category_id = $1',
+      [submission.category_id]
+    );
+    const labelMap = {};
+    questions.forEach(q => { labelMap[String(q.id)] = q.question_text; });
+
+    res.json({ submission, images, labelMap, read_only: true });
+  } catch (err) { next(err); }
+});
+
+router.get('/is-attendee', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT 1 FROM inspection_schedules WHERE attendee_id = $1 LIMIT 1',
+      [req.user.id]
+    );
+    res.json({ is_attendee: rows.length > 0 });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

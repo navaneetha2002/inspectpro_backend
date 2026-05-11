@@ -74,7 +74,14 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
         LEFT JOIN categories c ON c.id = fs.category_id
         LEFT JOIN locations l ON l.id = fs.location_id
         WHERE fs.submission_uuid=$1
-        AND fs.user_id=$2
+        AND (
+            fs.user_id = $2
+            OR EXISTS (
+              SELECT 1 FROM inspection_schedules s
+              WHERE s.submission_id = fs.id
+                AND s.attendee_id = $2
+            )
+          )
       `;
 
       values = [req.params.uuid, req.user.id];

@@ -7,10 +7,19 @@ const xlsx = require('xlsx');
 const pool = require('../db/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
-// Helper: get role by name, returns role row or null
+const FALLBACK_ROLES = ['global_admin', 'local_admin', 'inspector', 'coordinator', 'user'];
+
+// Helper: get role by name. Falls back to a hardcoded set if the roles table doesn't exist yet.
 async function getRoleByName(name) {
-  const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
-  return r.rows.length > 0 ? r.rows[0] : null;
+  try {
+    const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
+    return r.rows.length > 0 ? r.rows[0] : null;
+  } catch (err) {
+    if (err.code === '42P01') {
+      return FALLBACK_ROLES.includes(name) ? { name } : null;
+    }
+    throw err;
+  }
 }
 
 const excelUpload = multer({
@@ -64,12 +73,12 @@ router.post(
       const userId      = `US_${String(count).padStart(3, '0')}`;
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      const result = await pool.query(
-        `INSERT INTO users (user_id, username, email, password, role, location_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, user_id, username, email, role, location_id, created_at`,
-        [userId, username, email, hashedPassword, roleRow.name, location_id]
-      );
+     const result = await pool.query(
+  `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+   VALUES ($1, $2, $3, $4, $5, $6)
+   RETURNING id, user_id, username, email, role_id, location_id, created_at`,
+  [userId, username, email, hashedPassword, roleRow.id, location_id]
+);
 
       res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -88,7 +97,14 @@ router.post('/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT u.* FROM users u WHERE u.username = $1`,
+      `SELECT u.id, u.user_id, u.username, u.email, u.password,
+              u.location_id, u.role_id,
+              r.name AS role,
+              l.name AS location_name
+       FROM users u
+       LEFT JOIN roles r ON r.id = u.role_id
+       LEFT JOIN locations l ON l.id = u.location_id
+       WHERE u.username = $1`,
       [username]
     );
 
@@ -104,7 +120,7 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, user_id: user.user_id, username: user.username, role: user.role, location_id: user.location_id },
+      { id: user.id, user_id: user.user_id, username: user.username, role: user.role, role_id: user.role_id, location_id: user.location_id, location: user.location_name },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
@@ -117,7 +133,9 @@ router.post('/login', async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
-        location_id: user.location_id
+         role_id:     user.role_id,
+        location_id: user.location_id,
+         location:    user.location_name
       }
     });
   } catch (err) {
@@ -182,17 +200,25 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
   }
 });
 
-// ─── LIST ALL USERS  (global_admin only) ─────────────────────────────────────
-// GET /api/auth/users
 router.get('/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.user_id, u.username, u.email, u.role,
-              u.location_id, l.name AS location_name, u.created_at
-       FROM users u
-       LEFT JOIN locations l ON l.id = u.location_id
-       ORDER BY u.created_at DESC`
-    );
+  `SELECT 
+      u.id,
+      u.user_id,
+      u.username,
+      u.email,
+      u.role_id,
+      r.name AS role,
+      u.location_id,
+      l.name AS location,
+      u.created_at
+   FROM users u
+   LEFT JOIN roles r ON u.role_id = r.id
+   LEFT JOIN locations l ON u.location_id = l.id
+   ORDER BY u.created_at DESC`
+);
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -204,8 +230,14 @@ router.get('/users', authenticateToken, async (req, res) => {
 // GET /api/auth/users/bulk/template
 router.get('/users/bulk/template', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
   try {
-    const rolesRes = await pool.query('SELECT name FROM roles ORDER BY name');
-    const roleNames = rolesRes.rows.map(r => r.name).join(', ');
+    let roleNames;
+    try {
+      const rolesRes = await pool.query('SELECT name FROM roles ORDER BY name');
+      roleNames = rolesRes.rows.map(r => r.name).join(', ');
+    } catch (err) {
+      if (err.code !== '42P01') throw err;
+      roleNames = FALLBACK_ROLES.join(', ');
+    }
 
     const locsRes = await pool.query('SELECT name FROM locations ORDER BY name');
     const locationNames = locsRes.rows.map(r => r.name).join(', ');
@@ -326,13 +358,18 @@ router.post(
     }
 
     // ── Pre-fetch reference data once ──────────────────────────────────────
-    const [rolesRes, locsRes, countRes] = await Promise.all([
-      pool.query('SELECT name FROM roles'),
+    const [locsRes, countRes] = await Promise.all([
       pool.query('SELECT id, name FROM locations'),
       pool.query('SELECT COUNT(*) FROM users'),
     ]);
-
-    const validRoles  = new Set(rolesRes.rows.map((r) => r.name));
+    let validRoles;
+    try {
+      const rolesRes = await pool.query('SELECT name FROM roles');
+      validRoles = new Set(rolesRes.rows.map((r) => r.name));
+    } catch (err) {
+      if (err.code !== '42P01') throw err;
+      validRoles = new Set(FALLBACK_ROLES);
+    }
     const locationMap = new Map(locsRes.rows.map((l) => [l.name.toLowerCase(), l.id]));
     let nextCount     = parseInt(countRes.rows[0].count, 10);
 
@@ -370,12 +407,11 @@ router.post(
         const userId         = `US_${String(nextCount).padStart(3, '0')}`;
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const roleRow = await getRoleByName(role);
         const ins = await pool.query(
           `INSERT INTO users (user_id, username, email, password, role, location_id)
            VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id, user_id, username, email, role, location_id, created_at`,
-          [userId, username, email, hashedPassword, roleRow.name, location_id]
+          [userId, username, email, hashedPassword, role, location_id]
         );
 
         results.push({ row: rowNum, username, status: 'success', user: ins.rows[0] });
@@ -550,4 +586,28 @@ router.delete('/roles/:name', authenticateToken, authorizeRoles('global_admin'),
     res.status(500).json({ error: 'Failed to delete role' });
   }
 });
+
+router.get('/me', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+         u.id,
+         u.username,
+         u.email,
+         r.name AS role,
+         l.name AS location
+       FROM users u
+       LEFT JOIN roles r ON u.role_id = r.id
+       LEFT JOIN locations l ON u.location_id = l.id
+       WHERE u.id = $1`,
+      [req.user.id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch user profile' });
+  }
+});
+
 module.exports = router;

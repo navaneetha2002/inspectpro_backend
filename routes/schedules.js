@@ -3,9 +3,18 @@ const router  = express.Router();
 const pool    = require('../db/db');
 const { authenticateToken, authorizePermission } = require('../middleware/auth');
 
+// Accepts either a numeric id or a username string; returns the numeric user id or null.
+async function resolveUserId(val) {
+  if (!val) return null;
+  if (!isNaN(val)) return Number(val);
+  const { rows } = await pool.query('SELECT id FROM users WHERE username = $1', [val]);
+  if (!rows.length) throw Object.assign(new Error(`User not found: ${val}`), { status: 400 });
+  return rows[0].id;
+}
+
 // GET /api/schedules
-// Admins see all; others see schedules assigned to them OR created by them
-router.get('/', authenticateToken, authorizePermission('view_schedules'), async (req, res, next) => {
+// Admins see all; others see schedules assigned to them, created by them, or where they are the attendee
+router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const { role, id: userId } = req.user;
     let query, params;
@@ -19,13 +28,15 @@ router.get('/', authenticateToken, authorizePermission('view_schedules'), async 
                c.name       AS category_name,
                c.slug       AS category_slug,
                l.name       AS location_name,
-               l.slug       AS location_slug
+               l.slug       AS location_slug,
+               fs.submission_uuid
         FROM inspection_schedules s
         LEFT JOIN users u   ON s.assigned_to = u.id
         LEFT JOIN users cb  ON s.created_by  = cb.id
         LEFT JOIN users att ON s.attendee_id = att.id
         LEFT JOIN categories c ON s.category_id = c.id
         LEFT JOIN locations  l ON s.location_id  = l.id
+        LEFT JOIN form_submissions fs ON fs.id = s.submission_id
         ORDER BY s.scheduled_at ASC`;
       params = [];
     } else {
@@ -39,25 +50,80 @@ router.get('/', authenticateToken, authorizePermission('view_schedules'), async 
                c.name       AS category_name,
                c.slug       AS category_slug,
                l.name       AS location_name,
-               l.slug       AS location_slug
+               l.slug       AS location_slug,
+               fs.submission_uuid
         FROM inspection_schedules s
         LEFT JOIN users u   ON s.assigned_to = u.id
         LEFT JOIN users cb  ON s.created_by  = cb.id
         LEFT JOIN users att ON s.attendee_id = att.id
         LEFT JOIN categories c ON s.category_id = c.id
         LEFT JOIN locations  l ON s.location_id  = l.id
-        WHERE s.assigned_to = $1 OR s.created_by = $1
+        LEFT JOIN form_submissions fs ON fs.id = s.submission_id
+        WHERE s.assigned_to = $1 OR s.created_by = $1 OR s.attendee_id = $1
         ORDER BY s.scheduled_at ASC`;
       params = [userId];
     }
 
+    console.log('[GET /schedules] userId=', userId, 'role=', role, 'params=', params);
     const { rows } = await pool.query(query, params);
+    console.log('[GET /schedules] returned', rows.length, 'schedules');
+    rows.forEach(s => {
+      console.log(`  -> id=${s.id} assigned_to=${s.assigned_to} created_by=${s.created_by} attendee_id=${s.attendee_id}`);
+    });
     res.json(rows);
   } catch (err) { next(err); }
 });
 
+// GET /api/schedules/is-attendee  ← ADD THIS BLOCK
+router.get('/is-attendee', authenticateToken, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT 1 FROM inspection_schedules WHERE attendee_id = $1 LIMIT 1',
+      [req.user.id]
+    );
+    res.json({ is_attendee: rows.length > 0 });
+  } catch (err) { next(err); }
+});
+
+// Inspectors only
+router.get('/inspectors', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.username
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE r.name = 'inspector'
+      ORDER BY u.username
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch inspectors' });
+  }
+});
+
+
+// Attendees except global_admin & inspector
+router.get('/attendees', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.username
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE r.name NOT IN ('global_admin')
+      ORDER BY u.username
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch attendees' });
+  }
+});
+
 // GET /api/schedules/:id
-router.get('/:id', authenticateToken, authorizePermission('view_schedules'), async (req, res, next) => {
+router.get('/:id', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT s.*,
@@ -67,25 +133,28 @@ router.get('/:id', authenticateToken, authorizePermission('view_schedules'), asy
               c.name       AS category_name,
               c.slug       AS category_slug,
               l.name       AS location_name,
-              l.slug       AS location_slug
+              l.slug       AS location_slug,
+              fs.submission_uuid
        FROM inspection_schedules s
        LEFT JOIN users u   ON s.assigned_to = u.id
        LEFT JOIN users cb  ON s.created_by  = cb.id
        LEFT JOIN users att ON s.attendee_id = att.id
        LEFT JOIN categories c ON s.category_id = c.id
        LEFT JOIN locations  l ON s.location_id  = l.id
+       LEFT JOIN form_submissions fs ON fs.id = s.submission_id
        WHERE s.id = $1`,
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Schedule not found' });
 
-    // Non-admins can only view schedules assigned to them OR created by them
+    // Non-admins can only view schedules assigned to them, created by them, or where they are the attendee
     const { role, id: userId } = req.user;
     if (
       role !== 'global_admin' &&
       role !== 'local_admin'  &&
       rows[0].assigned_to !== userId &&
-      rows[0].created_by  !== userId
+      rows[0].created_by  !== userId &&
+      rows[0].attendee_id !== userId
     ) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -104,6 +173,7 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
   }
 
   try {
+    const resolvedAttendeeId = await resolveUserId(attendee_id);
     const { rows } = await pool.query(
       `INSERT INTO inspection_schedules
          (title, category_id, location_id, assigned_to, attendee_id, created_by, scheduled_at, due_at, notes)
@@ -111,18 +181,21 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
        RETURNING *`,
       [
         title,
-        category_id  || null,
-        location_id  || null,
+        category_id       || null,
+        location_id       || null,
         assigned_to,
-        attendee_id  || null,
+        resolvedAttendeeId,
         req.user.id,
         scheduled_at,
-        due_at       || null,
-        notes        || null,
+        due_at            || null,
+        notes             || null,
       ]
     );
     res.status(201).json(rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    next(err);
+  }
 });
 
 // PUT /api/schedules/:id — full update (admin only)
@@ -135,6 +208,7 @@ router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), a
   }
 
   try {
+    const resolvedAttendeeId = await resolveUserId(attendee_id);
     const { rows } = await pool.query(
       `UPDATE inspection_schedules SET
          title        = COALESCE($1, title),
@@ -149,18 +223,22 @@ router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), a
          updated_at   = NOW()
        WHERE id = $10
        RETURNING *`,
-      [title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, notes, status, req.params.id]
+      [title, category_id, location_id, assigned_to, resolvedAttendeeId, scheduled_at, due_at, notes, status, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Schedule not found' });
     res.json(rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    next(err);
+  }
 });
 
 // PATCH /api/schedules/:id/status
 // Admins: any schedule
 // Others: schedules they are assigned to OR created
-router.patch('/:id/status', authenticateToken, authorizePermission('view_schedules'), async (req, res, next) => {
-  const { status } = req.body;
+// Body: { status, submission_uuid? }
+router.patch('/:id/status', authenticateToken, async (req, res, next) => {
+  const { status, submission_uuid } = req.body;
   const allowed = ['in_progress', 'completed'];
 
   if (!allowed.includes(status)) {
@@ -170,17 +248,29 @@ router.patch('/:id/status', authenticateToken, authorizePermission('view_schedul
   try {
     const { role, id: userId } = req.user;
 
+    let submission_id = null;
+    if (submission_uuid) {
+      const { rows: subRows } = await pool.query(
+        'SELECT id FROM form_submissions WHERE submission_uuid = $1',
+        [submission_uuid]
+      );
+      if (subRows.length) submission_id = subRows[0].id;
+    }
+
     let whereClause, params;
     if (role === 'global_admin' || role === 'local_admin') {
-      whereClause = 'WHERE id = $2';
-      params      = [status, req.params.id];
+      whereClause = 'WHERE id = $3';
+      params      = [status, submission_id, req.params.id];
     } else {
-      whereClause = 'WHERE id = $2 AND (assigned_to = $3 OR created_by = $3)';
-      params      = [status, req.params.id, userId];
+      whereClause = 'WHERE id = $3 AND (assigned_to = $4 OR created_by = $4)';
+      params      = [status, submission_id, req.params.id, userId];
     }
 
     const { rows } = await pool.query(
-      `UPDATE inspection_schedules SET status = $1, updated_at = NOW() ${whereClause} RETURNING *`,
+      `UPDATE inspection_schedules
+         SET status = $1, submission_id = COALESCE($2, submission_id), updated_at = NOW()
+       ${whereClause}
+       RETURNING *`,
       params
     );
     if (!rows.length) return res.status(404).json({ error: 'Schedule not found or unauthorized' });
@@ -199,5 +289,7 @@ router.delete('/:id', authenticateToken, authorizePermission('manage_schedules')
     res.json({ message: 'Schedule deleted', id: rows[0].id });
   } catch (err) { next(err); }
 });
+
+
 
 module.exports = router;
