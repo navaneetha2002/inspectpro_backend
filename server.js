@@ -36,23 +36,4 @@ app.use('/api/schedules',  require('./routes/schedules'));
 
 const PORT = process.env.PORT || 3000;
 
-// ✅ 🔥 ADD THIS BLOCK (IMPORTANT)
-async function initDB() {
-  try {
-    const schemaPath = path.join(__dirname, 'schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf8');
-
-    await pool.query(schema);
-
-    console.log('✅ Database schema initialized');
-  } catch (err) {
-    console.error('❌ Error initializing DB:', err);
-  }
-}
-
-// ✅ Start server AFTER DB init
-initDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Backend running on port ${PORT}`);
-  });
-});
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
