@@ -65,13 +65,13 @@ router.post(
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const result = await pool.query(
-        `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+        `INSERT INTO users (user_id, username, email, password, role, location_id)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, user_id, username, email, role_id, location_id, created_at`,
-        [userId, username, email, hashedPassword, roleRow.id, location_id]
+         RETURNING id, user_id, username, email, role, location_id, created_at`,
+        [userId, username, email, hashedPassword, roleRow.name, location_id]
       );
 
-      res.status(201).json({ ...result.rows[0], role: roleRow.name });
+      res.status(201).json(result.rows[0]);
     } catch (err) {
       console.error(err);
       if (err.code === '23505') {
@@ -88,9 +88,7 @@ router.post('/login', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT u.*, r.name AS role_name FROM users u
-       LEFT JOIN roles r ON r.id = u.role_id
-       WHERE u.username = $1`,
+      `SELECT u.* FROM users u WHERE u.username = $1`,
       [username]
     );
 
@@ -106,7 +104,7 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, user_id: user.user_id, username: user.username, role: user.role_name, role_id: user.role_id, location_id: user.location_id },
+      { id: user.id, user_id: user.user_id, username: user.username, role: user.role, location_id: user.location_id },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
@@ -118,8 +116,7 @@ router.post('/login', async (req, res) => {
         user_id: user.user_id,
         username: user.username,
         email: user.email,
-        role: user.role_name,
-        role_id: user.role_id,
+        role: user.role,
         location_id: user.location_id
       }
     });
@@ -169,13 +166,13 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+      `INSERT INTO users (user_id, username, email, password, role, location_id)
        VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, user_id, username, email, role_id, location_id, created_at`,
-      [userId, username, email, hashedPassword, roleRow.id, location_id]
+       RETURNING id, user_id, username, email, role, location_id, created_at`,
+      [userId, username, email, hashedPassword, roleRow.name, location_id]
     );
 
-    res.status(201).json({ ...result.rows[0], role: roleRow.name });
+    res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
     if (err.code === '23505') {
@@ -190,10 +187,9 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
 router.get('/users', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.user_id, u.username, u.email, u.role_id,
-              r.name AS role, u.location_id, l.name AS location_name, u.created_at
+      `SELECT u.id, u.user_id, u.username, u.email, u.role,
+              u.location_id, l.name AS location_name, u.created_at
        FROM users u
-       LEFT JOIN roles r ON r.id = u.role_id
        LEFT JOIN locations l ON l.id = u.location_id
        ORDER BY u.created_at DESC`
     );
@@ -376,13 +372,13 @@ router.post(
 
         const roleRow = await getRoleByName(role);
         const ins = await pool.query(
-          `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+          `INSERT INTO users (user_id, username, email, password, role, location_id)
            VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING id, user_id, username, email, role_id, location_id, created_at`,
-          [userId, username, email, hashedPassword, roleRow.id, location_id]
+           RETURNING id, user_id, username, email, role, location_id, created_at`,
+          [userId, username, email, hashedPassword, roleRow.name, location_id]
         );
 
-        results.push({ row: rowNum, username, status: 'success', user: { ...ins.rows[0], role } });
+        results.push({ row: rowNum, username, status: 'success', user: ins.rows[0] });
         insertedCount++;
       } catch (err) {
         nextCount--;
@@ -424,16 +420,16 @@ router.put('/users/:id/role', authenticateToken, authorizeRoles('global_admin'),
     }
 
     const result = await pool.query(
-      `UPDATE users SET role_id = $1 WHERE id = $2
-       RETURNING id, user_id, username, email, role_id, location_id, created_at`,
-      [roleRow.id, id]
+      `UPDATE users SET role = $1 WHERE id = $2
+       RETURNING id, user_id, username, email, role, location_id, created_at`,
+      [roleRow.name, id]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ ...result.rows[0], role: roleRow.name });
+    res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update role' });
@@ -554,5 +550,4 @@ router.delete('/roles/:name', authenticateToken, authorizeRoles('global_admin'),
     res.status(500).json({ error: 'Failed to delete role' });
   }
 });
-}
 module.exports = router;

@@ -45,16 +45,42 @@ router.get('/', authenticateToken, async (req, res, next) => {
 });
 
 // GET /api/submissions/:uuid
-router.get('/:uuid', async (req, res, next) => {
+router.get('/:uuid', authenticateToken, async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT fs.*, c.name AS category_name, l.name AS location_name
-       FROM form_submissions fs
-       JOIN categories c ON c.id = fs.category_id
-       LEFT JOIN locations l ON l.id = fs.location_id
-       WHERE fs.submission_uuid=$1`,
-      [req.params.uuid]
-    );
+
+     const isAdmin = req.user.role === 'global_admin';
+
+    let query;
+    let values;
+
+     if (isAdmin) {
+
+      // Admin can view any submission
+      query = `
+        SELECT fs.*, c.name AS category_name, l.name AS location_name
+        FROM form_submissions fs
+        LEFT JOIN categories c ON c.id = fs.category_id
+        LEFT JOIN locations l ON l.id = fs.location_id
+        WHERE fs.submission_uuid=$1
+      `;
+
+      values = [req.params.uuid];
+
+    } else {
+       // Normal user can only view their own submission
+      query = `
+        SELECT fs.*, c.name AS category_name, l.name AS location_name
+        FROM form_submissions fs
+        LEFT JOIN categories c ON c.id = fs.category_id
+        LEFT JOIN locations l ON l.id = fs.location_id
+        WHERE fs.submission_uuid=$1
+        AND fs.user_id=$2
+      `;
+
+      values = [req.params.uuid, req.user.id];
+    }
+
+     const { rows } = await pool.query(query, values);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
 
     const submission = rows[0];
