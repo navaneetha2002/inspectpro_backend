@@ -85,16 +85,27 @@ router.get('/is-attendee', authenticateToken, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Inspectors only
+// Inspectors — optionally filtered by ?exclude_location_id=X
 router.get('/inspectors', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT u.id, u.username
-      FROM users u
-      JOIN roles r ON u.role_id = r.id
-      WHERE r.name = 'inspector'
-      ORDER BY u.username
-    `);
+    const { exclude_location_id } = req.query;
+    const params = [];
+    let excludeFilter = '';
+
+    if (exclude_location_id) {
+      params.push(exclude_location_id);
+      excludeFilter = `AND (u.location_id IS NULL OR u.location_id != $${params.length})`;
+    }
+
+    const result = await pool.query(
+      `SELECT u.id, u.username
+       FROM users u
+       JOIN roles r ON u.role_id = r.id
+       WHERE r.name = 'inspector'
+       ${excludeFilter}
+       ORDER BY u.username`,
+      params
+    );
 
     res.json(result.rows);
   } catch (err) {
@@ -104,16 +115,27 @@ router.get('/inspectors', authenticateToken, async (req, res) => {
 });
 
 
-// Attendees except global_admin & inspector
+// Attendees except global_admin — optionally filtered by ?location_id=X
 router.get('/attendees', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT u.id, u.username
-      FROM users u
-      JOIN roles r ON u.role_id = r.id
-      WHERE r.name NOT IN ('global_admin')
-      ORDER BY u.username
-    `);
+    const { location_id } = req.query;
+    const params = [];
+    let locationFilter = '';
+
+    if (location_id) {
+      params.push(location_id);
+      locationFilter = `AND u.location_id = $${params.length}`;
+    }
+
+    const result = await pool.query(
+      `SELECT u.id, u.username
+       FROM users u
+       JOIN roles r ON u.role_id = r.id
+       WHERE r.name NOT IN ('global_admin')
+       ${locationFilter}
+       ORDER BY u.username`,
+      params
+    );
 
     res.json(result.rows);
   } catch (err) {
