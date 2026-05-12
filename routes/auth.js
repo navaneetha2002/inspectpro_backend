@@ -45,10 +45,14 @@ router.post(
   '/register',
   authenticateToken,
   async (req, res) => {
+
+     console.log('[register] req.user.role:', req.user.role);
+    console.log('[register] check:', !['global_admin', 'local_admin'].includes(req.user.role));
+
     // ✅ Check role from JWT — only global_admin can register new users
-    if (req.user.role !== 'global_admin') {
-      return res.status(403).json({ error: 'Forbidden: only global_admin can register new users' });
-    }
+    if (!['global_admin', 'local_admin'].includes(req.user.role)) {
+  return res.status(403).json({ error: 'Forbidden: only global_admin can register new users' });
+}
 
     const { username, email, password, location, role } = req.body;
 
@@ -68,9 +72,13 @@ router.post(
         location_id = locationResult.rows[0].id;
       }
 
-      const countResult = await pool.query('SELECT COUNT(*) FROM users');
-      const count       = parseInt(countResult.rows[0].count) + 1;
-      const userId      = `US_${String(count).padStart(3, '0')}`;
+      const countResult = await pool.query(
+  `SELECT MAX(CAST(SUBSTRING(user_id FROM 4) AS INTEGER)) as max_id 
+   FROM users 
+   WHERE user_id LIKE 'US_%' AND user_id ~ '^US_[0-9]+$'`
+);
+const maxId  = countResult.rows[0].max_id || 0;
+const userId = `US_${String(maxId + 1).padStart(3, '0')}`;
       const hashedPassword = await bcrypt.hash(password, 10);
 
      const result = await pool.query(
@@ -474,7 +482,7 @@ router.put('/users/:id/role', authenticateToken, authorizeRoles('global_admin'),
 
 // ─── DELETE USER  (global_admin only) ────────────────────────────────────────
 // DELETE /api/auth/users/:id
-router.delete('/users/:id', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
+router.delete('/users/:id', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res) => {
   const { id } = req.params;
 
   try {

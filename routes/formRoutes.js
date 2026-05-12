@@ -4,7 +4,7 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const pool    = require('../db/db');
-const { optionalAuth, requireAuth } = require('../middleware/auth');
+const { authenticateToken, optionalAuth, requireAuth } = require('../middleware/auth');
 
 function parseAnswers(raw) {
   if (!raw) return {};
@@ -27,7 +27,7 @@ const upload = multer({
 });
 
 // GET /api/form/categories
-router.get('/categories', async (req, res, next) => {
+router.get('/categories', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM categories ORDER BY id');
     res.json(rows);
@@ -35,7 +35,7 @@ router.get('/categories', async (req, res, next) => {
 });
 
 // GET /api/form/my-submissions?location=<slug>
-router.get('/my-submissions', optionalAuth, async (req, res, next) => {
+router.get('/my-submissions', authenticateToken, optionalAuth, async (req, res, next) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -71,7 +71,7 @@ router.get('/my-submissions', optionalAuth, async (req, res, next) => {
 
 // GET /api/form/image/:id
 const axios = require('axios');
-router.get('/image/:id', async (req, res, next) => {
+router.get('/image/:id', authenticateToken, async (req, res, next) => {
   try {
     // Proxy the image request to the SAP frontend URL
     const sapUrl = `https://inspectpro-frontend.cfapps.eu10-004.hana.ondemand.com/api/form/image/${req.params.id}`;
@@ -87,7 +87,7 @@ router.get('/image/:id', async (req, res, next) => {
 });
 
 // GET /api/form/:slug?group=1
-router.get('/:slug', async (req, res, next) => {
+router.get('/:slug', authenticateToken, async (req, res, next) => {
   try {
     const { slug } = req.params;
     //const group    = parseInt(req.query.group) || 1;
@@ -167,7 +167,7 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
 // GET /api/form/:slug/my-submission?schedule_id=X
 // If schedule_id is given and the schedule already has a linked submission, return it as read-only.
 // Returns 404 when no submission is linked (caller should open the form).
-router.get('/:slug/my-submission', optionalAuth, async (req, res, next) => {
+router.get('/:slug/my-submission', authenticateToken, optionalAuth, async (req, res, next) => {
   try {
     const { schedule_id } = req.query;
     if (!schedule_id) return res.status(404).json({ error: 'No submission found' });
@@ -209,7 +209,7 @@ router.get('/:slug/my-submission', optionalAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/is-attendee', requireAuth, async (req, res, next) => {
+router.get('/is-attendee', authenticateToken, requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'SELECT 1 FROM inspection_schedules WHERE attendee_id = $1 LIMIT 1',

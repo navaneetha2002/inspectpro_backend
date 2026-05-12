@@ -81,6 +81,11 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
               WHERE s.submission_id = fs.id
                 AND s.attendee_id = $2
             )
+                OR EXISTS (
+              SELECT 1 FROM inspection_schedules s
+              WHERE s.submission_id = fs.id
+                AND s.created_by = $2
+            )
           )
       `;
 
@@ -110,7 +115,7 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
 });
 
 // DELETE /api/submissions/:uuid
-router.delete('/:uuid', async (req, res, next) => {
+router.delete('/:uuid', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'SELECT id FROM form_submissions WHERE submission_uuid=$1',
