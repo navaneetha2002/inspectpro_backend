@@ -1,9 +1,10 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 // GET /api/locations — all locations
-router.get('/', async (req, res, next) => {
+router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM locations ORDER BY id');
     res.json(rows);
@@ -11,7 +12,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/locations/:slug/categories — categories for a location
-router.get('/:slug/categories', async (req, res, next) => {
+router.get('/:slug/categories', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT c.*
@@ -27,7 +28,7 @@ router.get('/:slug/categories', async (req, res, next) => {
 });
 
 // POST /api/locations — create location
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     const { name, slug, description } = req.body;
     const { rows } = await pool.query(
@@ -40,7 +41,7 @@ router.post('/', async (req, res, next) => {
 });
 
 // PUT /api/locations/:id — update location
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', authenticateToken, authorizeRoles('global_admin'),async (req, res, next) => {
   try {
     const { name, slug, description } = req.body;
     const { rows } = await pool.query(
@@ -53,7 +54,7 @@ router.put('/:id', async (req, res, next) => {
 });
 
 // DELETE /api/locations/:id — delete location
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     await pool.query('DELETE FROM locations WHERE id=$1', [req.params.id]);
     res.json({ success: true });
@@ -61,7 +62,7 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 // GET /api/locations/:id/categories-assigned — all categories with assigned flag
-router.get('/:id/categories-assigned', async (req, res, next) => {
+router.get('/:id/categories-assigned', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT c.*,
@@ -77,7 +78,7 @@ router.get('/:id/categories-assigned', async (req, res, next) => {
 });
 
 // POST /api/locations/:id/categories — assign category to location
-router.post('/:id/categories', async (req, res, next) => {
+router.post('/:id/categories', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     const { category_id } = req.body;
     await pool.query(
@@ -89,7 +90,7 @@ router.post('/:id/categories', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 // GET /api/locations/:id — get single location by id
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM locations WHERE id = $1`,
@@ -101,7 +102,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // DELETE /api/locations/:id/categories/:categoryId — remove category from location
-router.delete('/:id/categories/:categoryId', async (req, res, next) => {
+router.delete('/:id/categories/:categoryId', authenticateToken, authorizeRoles('global_admin'),async (req, res, next) => {
   try {
     await pool.query(
       'DELETE FROM location_categories WHERE location_id=$1 AND category_id=$2',

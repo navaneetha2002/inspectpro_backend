@@ -26,7 +26,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ✅ ROUTES
 app.use('/api/form',        require('./routes/formRoutes'));
-app.use('/api/questions', authenticateToken, require('./routes/questions'));
+app.use('/api/questions', require('./routes/questions'));
 app.use('/api/submissions', require('./routes/submissions'));
 app.use('/api/locations',   require('./routes/locations'));
 app.use('/api/categories',  require('./routes/categories'));

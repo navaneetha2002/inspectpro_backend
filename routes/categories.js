@@ -1,9 +1,10 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 // GET /api/categories
-router.get('/', async (req, res, next) => {
+router.get('/', authenticateToken,async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM categories ORDER BY id');
     res.json(rows);
@@ -11,7 +12,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // POST /api/categories
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     const { name, slug, description } = req.body;
     const { rows } = await pool.query(
@@ -24,7 +25,7 @@ router.post('/', async (req, res, next) => {
 });
 
 // PUT /api/categories/:id
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     const { name, slug, description } = req.body;
     const { rows } = await pool.query(
@@ -36,7 +37,7 @@ router.put('/:id', async (req, res, next) => {
 });
 
 // DELETE /api/categories/:id
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', authenticateToken, authorizeRoles('global_admin'), async (req, res, next) => {
   try {
     await pool.query('DELETE FROM categories WHERE id=$1', [req.params.id]);
     res.json({ success: true });
