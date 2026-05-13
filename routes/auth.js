@@ -9,7 +9,21 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 const FALLBACK_ROLES = ['global_admin', 'local_admin', 'inspector', 'coordinator', 'user'];
 
-// Helper: get role by name. Falls back to a hardcoded set if the roles table doesn't exist yet.
+// ─── PASSWORD VALIDATION ──────────────────────────────────────────────────────
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{8,}$/;
+
+function validatePassword(password) {
+  if (!password) return 'Password is required';
+  if (password.length < 8) return 'Password must be at least 8 characters';
+  if (!/[a-z]/.test(password)) return 'Password must contain at least one lowercase letter';
+  if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter';
+  if (!/\d/.test(password)) return 'Password must contain at least one number';
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password))
+    return 'Password must contain at least one special character (!@#$%^&* etc.)';
+  return null; // valid
+}
+
+// ─── HELPER: get role by name ─────────────────────────────────────────────────
 async function getRoleByName(name) {
   try {
     const r = await pool.query('SELECT * FROM roles WHERE name = $1', [name]);
@@ -54,23 +68,27 @@ router.post(
   return res.status(403).json({ error: 'Forbidden: only global_admin can register new users' });
 }
 
-    const { username, email, password, location, role } = req.body;
+  const { username, email, password, location, role } = req.body;
 
-    try {
-      const roleRow = await getRoleByName(role || 'user');
-      if (!roleRow) return res.status(400).json({ error: 'Invalid role' });
+  // ✅ Password validation
+  const pwError = validatePassword(password);
+  if (pwError) return res.status(400).json({ error: pwError });
 
-      let location_id = null;
-      if (location) {
-        const locationResult = await pool.query(
-          'SELECT id FROM locations WHERE name = $1',
-          [location]
-        );
-        if (locationResult.rows.length === 0) {
-          return res.status(400).json({ error: 'Invalid location' });
-        }
-        location_id = locationResult.rows[0].id;
+  try {
+    const roleRow = await getRoleByName(role || 'user');
+    if (!roleRow) return res.status(400).json({ error: 'Invalid role' });
+
+    let location_id = null;
+    if (location) {
+      const locationResult = await pool.query(
+        'SELECT id FROM locations WHERE name = $1',
+        [location]
+      );
+      if (locationResult.rows.length === 0) {
+        return res.status(400).json({ error: 'Invalid location' });
       }
+      location_id = locationResult.rows[0].id;
+    }
 
       const countResult = await pool.query(
   `SELECT MAX(CAST(SUBSTRING(user_id FROM 4) AS INTEGER)) as max_id 
@@ -81,23 +99,22 @@ const maxId  = countResult.rows[0].max_id || 0;
 const userId = `US_${String(maxId + 1).padStart(3, '0')}`;
       const hashedPassword = await bcrypt.hash(password, 10);
 
-     const result = await pool.query(
-  `INSERT INTO users (user_id, username, email, password, role_id, location_id)
-   VALUES ($1, $2, $3, $4, $5, $6)
-   RETURNING id, user_id, username, email, role_id, location_id, created_at`,
-  [userId, username, email, hashedPassword, roleRow.id, location_id]
-);
+    const result = await pool.query(
+      `INSERT INTO users (user_id, username, email, password, role_id, location_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, user_id, username, email, role_id, location_id, created_at`,
+      [userId, username, email, hashedPassword, roleRow.id, location_id]
+    );
 
-      res.status(201).json(result.rows[0]);
-    } catch (err) {
-      console.error(err);
-      if (err.code === '23505') {
-        return res.status(409).json({ error: 'Username or email already exists' });
-      }
-      res.status(500).json({ error: 'User registration failed' });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Username or email already exists' });
     }
+    res.status(500).json({ error: 'User registration failed' });
   }
-);
+});
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
@@ -128,7 +145,15 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, user_id: user.user_id, username: user.username, role: user.role, role_id: user.role_id, location_id: user.location_id, location: user.location_name },
+      {
+        id: user.id,
+        user_id: user.user_id,
+        username: user.username,
+        role: user.role,
+        role_id: user.role_id,
+        location_id: user.location_id,
+        location: user.location_name,
+      },
       process.env.JWT_SECRET,
       { expiresIn: '8h' }
     );
@@ -141,10 +166,10 @@ router.post('/login', async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
-         role_id:     user.role_id,
+        role_id: user.role_id,
         location_id: user.location_id,
-         location:    user.location_name
-      }
+        location: user.location_name,
+      },
     });
   } catch (err) {
     console.error(err);
@@ -165,6 +190,10 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
   if (!username || !email || !password || !role) {
     return res.status(400).json({ error: 'username, email, password and role are required' });
   }
+
+  // ✅ Password validation
+  const pwError = validatePassword(password);
+  if (pwError) return res.status(400).json({ error: pwError });
 
   const roleRow = await getRoleByName(role);
   if (!roleRow) {
@@ -208,25 +237,25 @@ router.post('/users', authenticateToken, authorizeRoles('global_admin'), async (
   }
 });
 
+// ─── GET ALL USERS ────────────────────────────────────────────────────────────
 router.get('/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-  `SELECT 
-      u.id,
-      u.user_id,
-      u.username,
-      u.email,
-      u.role_id,
-      r.name AS role,
-      u.location_id,
-      l.name AS location,
-      u.created_at
-   FROM users u
-   LEFT JOIN roles r ON u.role_id = r.id
-   LEFT JOIN locations l ON u.location_id = l.id
-   ORDER BY u.created_at DESC`
-);
-
+      `SELECT 
+          u.id,
+          u.user_id,
+          u.username,
+          u.email,
+          u.role_id,
+          r.name AS role,
+          u.location_id,
+          l.name AS location,
+          u.created_at
+       FROM users u
+       LEFT JOIN roles r ON u.role_id = r.id
+       LEFT JOIN locations l ON u.location_id = l.id
+       ORDER BY u.created_at DESC`
+    );
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -273,7 +302,6 @@ router.get('/users/bulk/template', authenticateToken, authorizeRoles('global_adm
       header: ['username', 'email', 'password', 'role', 'location'],
     });
 
-    // Column widths
     ws['!cols'] = [
       { wch: 20 },
       { wch: 28 },
@@ -284,16 +312,15 @@ router.get('/users/bulk/template', authenticateToken, authorizeRoles('global_adm
 
     xlsx.utils.book_append_sheet(wb, ws, 'Users');
 
-    // Notes sheet so the admin knows valid values
     const notesRows = [
-      { field: 'username', notes: 'Required. Must be unique.' },
-      { field: 'email',    notes: 'Required. Must be unique.' },
-      { field: 'password', notes: 'Required. Plain text — will be hashed on import.' },
-      { field: 'role',     notes: `Required. Valid values: ${roleNames}` },
-      { field: 'location', notes: `Optional. Valid values: ${locationNames}` },
+      { field: 'username',  notes: 'Required. Must be unique.' },
+      { field: 'email',     notes: 'Required. Must be unique.' },
+      { field: 'password',  notes: 'Required. Min 8 chars, must include uppercase, lowercase, number, and special character (!@#$%^&* etc.)' },
+      { field: 'role',      notes: `Required. Valid values: ${roleNames}` },
+      { field: 'location',  notes: `Optional. Valid values: ${locationNames}` },
     ];
     const wsNotes = xlsx.utils.json_to_sheet(notesRows, { header: ['field', 'notes'] });
-    wsNotes['!cols'] = [{ wch: 12 }, { wch: 60 }];
+    wsNotes['!cols'] = [{ wch: 12 }, { wch: 70 }];
     xlsx.utils.book_append_sheet(wb, wsNotes, 'Instructions');
 
     const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -324,7 +351,9 @@ router.post(
   },
   async (req, res) => {
     if (!req.file) {
-      return res.status(400).json({ error: 'Excel file is required — set form-data key to "file" and type to File' });
+      return res.status(400).json({
+        error: 'Excel file is required — set form-data key to "file" and type to File',
+      });
     }
 
     // ── Parse workbook ──────────────────────────────────────────────────────
@@ -390,13 +419,31 @@ router.post(
       const rowNum = i + 2; // row 1 = header
       const { username, email, password, role, location } = row;
 
-      // Validation
+      // Required fields check
       if (!username || !email || !password || !role) {
-        results.push({ row: rowNum, username: username || '', status: 'failed', reason: 'username, email, password and role are required' });
+        results.push({
+          row: rowNum,
+          username: username || '',
+          status: 'failed',
+          reason: 'username, email, password and role are required',
+        });
         continue;
       }
+
+      // ✅ Password validation
+      const pwError = validatePassword(password);
+      if (pwError) {
+        results.push({ row: rowNum, username, status: 'failed', reason: pwError });
+        continue;
+      }
+
       if (!validRoles.has(role)) {
-        results.push({ row: rowNum, username, status: 'failed', reason: `Invalid role "${role}". Valid: ${[...validRoles].join(', ')}` });
+        results.push({
+          row: rowNum,
+          username,
+          status: 'failed',
+          reason: `Invalid role "${role}". Valid: ${[...validRoles].join(', ')}`,
+        });
         continue;
       }
 
@@ -404,7 +451,12 @@ router.post(
       if (location) {
         location_id = locationMap.get(location.toLowerCase());
         if (!location_id) {
-          results.push({ row: rowNum, username, status: 'failed', reason: `Invalid location "${location}"` });
+          results.push({
+            row: rowNum,
+            username,
+            status: 'failed',
+            reason: `Invalid location "${location}"`,
+          });
           continue;
         }
       }
@@ -502,7 +554,7 @@ router.delete('/users/:id', authenticateToken, authorizeRoles('global_admin', 'l
   }
 });
 
-// ─── LIST ALL ROLES  (global_admin only) ────────────────────────────────────
+// ─── LIST ALL ROLES  (global_admin only) ─────────────────────────────────────
 // GET /api/auth/roles
 router.get('/roles', authenticateToken, authorizeRoles('global_admin'), async (req, res) => {
   try {
@@ -533,8 +585,7 @@ router.post('/roles', authenticateToken, authorizeRoles('global_admin'), async (
 
   try {
     const result = await pool.query(
-      `INSERT INTO roles (name, description) VALUES ($1, $2)
-       RETURNING *`,
+      `INSERT INTO roles (name, description) VALUES ($1, $2) RETURNING *`,
       [normalised, description || null]
     );
     res.status(201).json(result.rows[0]);
@@ -595,6 +646,8 @@ router.delete('/roles/:name', authenticateToken, authorizeRoles('global_admin'),
   }
 });
 
+// ─── GET CURRENT USER PROFILE ─────────────────────────────────────────────────
+// GET /api/auth/me
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
