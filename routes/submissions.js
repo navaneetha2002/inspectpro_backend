@@ -6,12 +6,12 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 // GET /api/submissions
 router.get('/', authenticateToken, async (req, res, next) => {
   try {
-    const isAdmin = req.user.role === 'global_admin';
+    const { role, id: userId, location_id } = req.user;
 
     let rows;
 
-    if (isAdmin) {
-      // Admin — all submissions + who submitted
+    if (role === 'global_admin') {
+      // Global admin — all submissions
       ({ rows } = await pool.query(
         `SELECT fs.*, c.name AS category_name, l.name AS location_name,
                 u.username AS submitted_by,
@@ -23,6 +23,22 @@ router.get('/', authenticateToken, async (req, res, next) => {
          LEFT JOIN users u ON u.id = fs.user_id
          GROUP BY fs.id, c.name, l.name, u.username
          ORDER BY fs.submitted_at DESC`
+      ));
+    } else if (role === 'local_admin') {
+      // Local admin — all submissions from their location
+      ({ rows } = await pool.query(
+        `SELECT fs.*, c.name AS category_name, l.name AS location_name,
+                u.username AS submitted_by,
+                COUNT(si.id) AS image_count
+         FROM form_submissions fs
+         LEFT JOIN categories c ON c.id = fs.category_id
+         LEFT JOIN locations l ON l.id = fs.location_id
+         LEFT JOIN submission_images si ON si.submission_id = fs.id
+         LEFT JOIN users u ON u.id = fs.user_id
+         WHERE fs.location_id = $1
+         GROUP BY fs.id, c.name, l.name, u.username
+         ORDER BY fs.submitted_at DESC`,
+        [location_id]
       ));
     } else {
       // Regular user — only their own submissions
@@ -36,7 +52,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
          WHERE fs.user_id = $1
          GROUP BY fs.id, c.name, l.name
          ORDER BY fs.submitted_at DESC`,
-        [req.user.id]
+        [userId]
       ));
     }
 
@@ -48,14 +64,12 @@ router.get('/', authenticateToken, async (req, res, next) => {
 router.get('/:uuid', authenticateToken, async (req, res, next) => {
   try {
 
-     const isAdmin = req.user.role === 'global_admin';
+    const { role, id: userId, location_id } = req.user;
 
     let query;
     let values;
 
-     if (isAdmin) {
-
-      // Admin can view any submission
+    if (role === 'global_admin') {
       query = `
         SELECT fs.*, c.name AS category_name, l.name AS location_name
         FROM form_submissions fs
@@ -63,11 +77,17 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
         LEFT JOIN locations l ON l.id = fs.location_id
         WHERE fs.submission_uuid=$1
       `;
-
       values = [req.params.uuid];
-
+    } else if (role === 'local_admin') {
+      query = `
+        SELECT fs.*, c.name AS category_name, l.name AS location_name
+        FROM form_submissions fs
+        LEFT JOIN categories c ON c.id = fs.category_id
+        LEFT JOIN locations l ON l.id = fs.location_id
+        WHERE fs.submission_uuid=$1 AND fs.location_id=$2
+      `;
+      values = [req.params.uuid, location_id];
     } else {
-       // Normal user can only view their own submission
       query = `
         SELECT fs.*, c.name AS category_name, l.name AS location_name
         FROM form_submissions fs
@@ -81,15 +101,14 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
               WHERE s.submission_id = fs.id
                 AND s.attendee_id = $2
             )
-                OR EXISTS (
+            OR EXISTS (
               SELECT 1 FROM inspection_schedules s
               WHERE s.submission_id = fs.id
                 AND s.created_by = $2
             )
           )
       `;
-
-      values = [req.params.uuid, req.user.id];
+      values = [req.params.uuid, userId];
     }
 
      const { rows } = await pool.query(query, values);
