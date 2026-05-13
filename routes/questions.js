@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
 function normaliseQuestions(rows) {
   return rows.map(q => {
@@ -15,12 +15,28 @@ function normaliseQuestions(rows) {
 // GET /api/questions
 router.get('/', authenticateToken, async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT q.*, c.name AS category_name
-       FROM questions q
-       JOIN categories c ON c.id = q.category_id
-       ORDER BY c.id, q.order_index`
-    );
+    let rows;
+    console.log('[GET /questions] user:', JSON.stringify(req.user));
+
+    if (req.user.role === 'local_admin' && req.user.location_id) {
+      ({ rows } = await pool.query(
+        `SELECT q.*, c.name AS category_name
+         FROM questions q
+         JOIN categories c ON c.id = q.category_id
+         JOIN location_categories lc ON lc.category_id = c.id
+         WHERE lc.location_id = $1
+         ORDER BY c.id, q.order_index`,
+        [req.user.location_id]
+      ));
+    } else {
+      ({ rows } = await pool.query(
+        `SELECT q.*, c.name AS category_name
+         FROM questions q
+         JOIN categories c ON c.id = q.category_id
+         ORDER BY c.id, q.order_index`
+      ));
+    }
+
     res.json(normaliseQuestions(rows));
   } catch (err) { next(err); }
 });
@@ -28,9 +44,25 @@ router.get('/', authenticateToken, async (req, res, next) => {
 // GET /api/questions/all  (for dropdowns — no category filter)
 router.get('/all', authenticateToken, async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT id, question_text, field_type, options FROM questions ORDER BY order_index'
-    );
+    console.log('[GET /questions/all] user:', JSON.stringify(req.user));
+    let rows;
+
+    if (req.user.role === 'local_admin' && req.user.location_id) {
+      ({ rows } = await pool.query(
+        `SELECT q.id, q.question_text, q.field_type, q.options
+         FROM questions q
+         JOIN categories c ON c.id = q.category_id
+         JOIN location_categories lc ON lc.category_id = c.id
+         WHERE lc.location_id = $1
+         ORDER BY q.order_index`,
+        [req.user.location_id]
+      ));
+    } else {
+      ({ rows } = await pool.query(
+        'SELECT id, question_text, field_type, options FROM questions ORDER BY order_index'
+      ));
+    }
+
     res.json(normaliseQuestions(rows));
   } catch (err) { next(err); }
 });
@@ -45,7 +77,7 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
 });
 
 // POST /api/questions
-router.post('/', authenticateToken, async (req, res, next) => {
+router.post('/', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   try {
     const {
       category_id, question_text, field_type, options_raw,
@@ -74,7 +106,7 @@ router.post('/', authenticateToken, async (req, res, next) => {
 });
 
 // PUT /api/questions/:id
-router.put('/:id', authenticateToken, async (req, res, next) => {
+router.put('/:id',  authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   try {
     const {
       category_id, question_text, field_type, options_raw,
@@ -105,7 +137,7 @@ router.put('/:id', authenticateToken, async (req, res, next) => {
 });
 
 // DELETE /api/questions/:id
-router.delete('/:id', authenticateToken, async (req, res, next) => {
+router.delete('/:id', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   try {
     await pool.query('DELETE FROM questions WHERE id=$1', [req.params.id]);
     res.json({ success: true });
