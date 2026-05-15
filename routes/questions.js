@@ -12,30 +12,38 @@ function normaliseQuestions(rows) {
   });
 }
 
-// GET /api/questions
+// GET /api/questions?category_id=X
 router.get('/', authenticateToken, async (req, res, next) => {
   try {
-    let rows;
-    console.log('[GET /questions] user:', JSON.stringify(req.user));
+    const { category_id } = req.query;
+    const params = [];
+    const filters = [];
 
     if (req.user.role === 'local_admin' && req.user.location_id) {
-      ({ rows } = await pool.query(
-        `SELECT q.*, c.name AS category_name
-         FROM questions q
-         JOIN categories c ON c.id = q.category_id
-         JOIN location_categories lc ON lc.category_id = c.id
-         WHERE lc.location_id = $1
-         ORDER BY c.id, q.order_index`,
-        [req.user.location_id]
-      ));
-    } else {
-      ({ rows } = await pool.query(
-        `SELECT q.*, c.name AS category_name
-         FROM questions q
-         JOIN categories c ON c.id = q.category_id
-         ORDER BY c.id, q.order_index`
-      ));
+      params.push(req.user.location_id);
+      filters.push(`lc.location_id = $${params.length}`);
     }
+
+    if (category_id) {
+      params.push(category_id);
+      filters.push(`q.category_id = $${params.length}`);
+    }
+
+    const joinClause = (req.user.role === 'local_admin' && req.user.location_id)
+      ? 'JOIN location_categories lc ON lc.category_id = c.id'
+      : '';
+
+    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+    const { rows } = await pool.query(
+      `SELECT q.*, c.name AS category_name
+       FROM questions q
+       JOIN categories c ON c.id = q.category_id
+       ${joinClause}
+       ${whereClause}
+       ORDER BY c.id, q.order_index`,
+      params
+    );
 
     res.json(normaliseQuestions(rows));
   } catch (err) { next(err); }
