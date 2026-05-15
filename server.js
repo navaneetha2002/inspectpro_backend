@@ -32,7 +32,8 @@ app.use('/api/locations',   require('./routes/locations'));
 app.use('/api/categories',  require('./routes/categories'));
 app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/permissions', require('./routes/permissions'));
-app.use('/api/schedules',  require('./routes/schedules'));
+app.use('/api/schedules',      require('./routes/schedules'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 const PORT = process.env.PORT || 3000;
 

@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
 const { authenticateToken } = require('../middleware/auth');
+const { createNotifications } = require('../db/notifications');
 
 // GET /api/permissions
 // Returns all available permissions
@@ -109,6 +110,17 @@ router.put('/roles/:roleName', authenticateToken, async (req, res, next) => {
     );
 
     res.json({ role_id: roleId, role: roleName, permissions: updated });
+
+    // Notify all users with this role (fire-and-forget)
+    pool.query('SELECT id FROM users WHERE role_id = $1', [roleId])
+      .then(({ rows: affected }) => createNotifications(
+        affected.map(u => u.id),
+        'permission',
+        'Permissions Updated',
+        `Your role (${roleName}) permissions have been updated by an administrator`,
+        '/settings'
+      ))
+      .catch(err => console.error('[notifications] permission trigger failed:', err));
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);
