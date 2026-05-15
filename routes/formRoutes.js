@@ -5,6 +5,7 @@ const path    = require('path');
 const fs      = require('fs');
 const pool    = require('../db/db');
 const { authenticateToken, optionalAuth, requireAuth } = require('../middleware/auth');
+const { createNotifications } = require('../db/notifications');
 
 function parseAnswers(raw) {
   if (!raw) return {};
@@ -156,6 +157,22 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
 
     await client.query('COMMIT');
     res.json({ submissionUuid });
+
+    // Notify all admins about the new submission (fire-and-forget)
+    pool.query(
+      `SELECT id FROM users WHERE role_id IN (
+         SELECT id FROM roles WHERE name IN ('global_admin', 'local_admin')
+       )`
+    ).then(({ rows: admins }) => {
+      const adminIds = admins.map(r => r.id);
+      return createNotifications(
+        adminIds,
+        'submission',
+        'New Form Submission',
+        `A new inspection form was submitted for "${cats[0].name}"`,
+        `/submissions/${submissionUuid}`
+      );
+    }).catch(err => console.error('[notifications] submission trigger failed:', err));
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);

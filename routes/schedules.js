@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
 const { authenticateToken, authorizePermission } = require('../middleware/auth');
+const { createNotifications } = require('../db/notifications');
 
 // Accepts either a numeric id or a username string; returns the numeric user id or null.
 async function resolveUserId(val) {
@@ -213,7 +214,21 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
         notes             || null,
       ]
     );
-    res.status(201).json(rows[0]);
+    const schedule = rows[0];
+    res.status(201).json(schedule);
+
+    // Notify assigned inspector and attendee (fire-and-forget — never blocks the response)
+    const recipientIds = [Number(assigned_to)];
+    if (resolvedAttendeeId && resolvedAttendeeId !== Number(assigned_to)) {
+      recipientIds.push(resolvedAttendeeId);
+    }
+    createNotifications(
+      recipientIds,
+      'schedule',
+      'New Inspection Assigned',
+      `You have been scheduled for: "${title}"`,
+      `/schedules/${schedule.id}`
+    ).catch(err => console.error('[notifications] schedule trigger failed:', err));
   } catch (err) {
     if (err.status === 400) return res.status(400).json({ error: err.message });
     next(err);

@@ -751,3 +751,34 @@ CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to  ON inspection_schedules(a
 CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at ON inspection_schedules(scheduled_at);
 
 CREATE INDEX IF NOT EXISTS idx_schedules_status       ON inspection_schedules(status);
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- 11. NOTIFICATIONS
+
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS notifications (
+
+  id         SERIAL PRIMARY KEY,
+
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  type       VARCHAR(50) NOT NULL,
+
+  title      VARCHAR(255) NOT NULL,
+
+  message    TEXT,
+
+  is_read    BOOLEAN DEFAULT FALSE,
+
+  action_url VARCHAR(500),
+
+  created_at TIMESTAMP DEFAULT NOW()
+
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_unread  ON notifications(user_id, is_read);

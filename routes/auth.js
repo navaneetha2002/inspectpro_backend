@@ -315,7 +315,7 @@ router.get('/users/bulk/template', authenticateToken, authorizeRoles('global_adm
 router.post(
   '/users/bulk',
   authenticateToken,
-  authorizeRoles('global_admin'),
+  authorizeRoles('global_admin','local_admin'),
   (req, res, next) => {
     excelUpload.single('file')(req, res, (err) => {
       if (err) return res.status(400).json({ error: err.message });

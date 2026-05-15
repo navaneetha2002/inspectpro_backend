@@ -15,13 +15,15 @@ router.get('/', authenticateToken, async (req, res, next) => {
       ({ rows } = await pool.query(
         `SELECT fs.*, c.name AS category_name, l.name AS location_name,
                 u.username AS submitted_by,
+                r.username AS reviewed_by_username,
                 COUNT(si.id) AS image_count
          FROM form_submissions fs
          LEFT JOIN categories c ON c.id = fs.category_id
          LEFT JOIN locations l ON l.id = fs.location_id
          LEFT JOIN submission_images si ON si.submission_id = fs.id
          LEFT JOIN users u ON u.id = fs.user_id
-         GROUP BY fs.id, c.name, l.name, u.username
+         LEFT JOIN users r ON r.id = fs.reviewed_by 
+         GROUP BY fs.id, c.name, l.name, u.username, r.username
          ORDER BY fs.submitted_at DESC`
       ));
     } else {
@@ -57,7 +59,7 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
 
       // Admin can view any submission
       query = `
-        SELECT fs.*, c.name AS category_name, l.name AS location_name
+        SELECT fs.*, c.name AS category_name, l.name AS location_name, r.username AS reviewed_by_username
         FROM form_submissions fs
         LEFT JOIN categories c ON c.id = fs.category_id
         LEFT JOIN locations l ON l.id = fs.location_id
@@ -69,10 +71,11 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
     } else {
        // Normal user can only view their own submission
       query = `
-        SELECT fs.*, c.name AS category_name, l.name AS location_name
+        SELECT fs.*, c.name AS category_name, l.name AS location_name, r.username AS reviewed_by_username
         FROM form_submissions fs
         LEFT JOIN categories c ON c.id = fs.category_id
         LEFT JOIN locations l ON l.id = fs.location_id
+        LEFT JOIN users r ON r.id = fs.reviewed_by
         WHERE fs.submission_uuid=$1
         AND (
             fs.user_id = $2
@@ -113,6 +116,53 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
     res.json({ submission, images, labelMap });
   } catch (err) { next(err); }
 });
+
+// PATCH /api/submissions/:uuid/status
+// Inspector (or admin) approves or rejects a submission.
+router.patch(
+  '/:uuid/status',
+  authenticateToken,
+  authorizeRoles('global_admin', 'local_admin', 'inspector'), // adjust roles as needed
+  async (req, res, next) => {
+    try {
+      const { status, review_notes } = req.body;
+
+      // Validate incoming status
+      if (!['approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ error: "status must be 'approved' or 'rejected'" });
+      }
+
+      // Fetch the submission so we can check it exists + isn't already decided
+      const { rows } = await pool.query(
+        'SELECT id, status FROM form_submissions WHERE submission_uuid = $1',
+        [req.params.uuid]
+      );
+      if (!rows.length) return res.status(404).json({ error: 'Not found' });
+
+      const submission = rows[0];
+
+      // Prevent re-reviewing an already decided submission (remove if you want to allow it)
+      if (submission.status !== 'pending') {
+        return res.status(409).json({
+          error: `Submission is already '${submission.status}' and cannot be changed.`
+        });
+      }
+
+      const { rows: updated } = await pool.query(
+        `UPDATE form_submissions
+         SET status       = $1,
+             review_notes = $2,
+             reviewed_by  = $3,
+             reviewed_at  = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [status, review_notes ?? null, req.user.id, submission.id]
+      );
+
+      res.json({ success: true, submission: updated[0] });
+    } catch (err) { next(err); }
+  }
+);
 
 // DELETE /api/submissions/:uuid
 router.delete('/:uuid', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
