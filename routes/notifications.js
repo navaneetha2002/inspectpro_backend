@@ -9,6 +9,9 @@ router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       `SELECT n.id, n.type, n.title, n.message, n.is_read, n.action_url, n.created_at,
+      CASE WHEN n.type = 'submission' THEN c.name  END AS submission_category,
+         CASE WHEN n.type = 'submission' THEN l.name  END AS submission_location,
+
               CASE
                 WHEN n.type = 'schedule' AND s.assigned_to = n.user_id THEN 'inspector'
                 WHEN n.type = 'schedule' AND s.attendee_id = n.user_id THEN 'attendee'
@@ -18,6 +21,12 @@ router.get('/', authenticateToken, async (req, res, next) => {
        LEFT JOIN inspection_schedules s
          ON n.type = 'schedule'
         AND s.id = CAST(NULLIF(SUBSTRING(n.action_url FROM '/schedules/(\\d+)'), '') AS INTEGER)
+         LEFT JOIN form_submissions fs
+         ON n.type = 'submission'
+        AND fs.submission_uuid = NULLIF(SUBSTRING(n.action_url FROM '/submissions/([^/]+)$'), '')::uuid
+
+       LEFT JOIN categories c ON c.id = fs.category_id
+       LEFT JOIN locations  l ON l.id = fs.location_id
        WHERE n.user_id = $1
        ORDER BY n.created_at DESC
        LIMIT 50`,

@@ -112,10 +112,11 @@ router.get('/:slug', authenticateToken, async (req, res, next) => {
 router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const { slug }      = req.params;
-    const answers       = parseAnswers(req.body.answers);
-    const locationSlug  = req.body.locationSlug || null;
-    const userId        = req.user ? req.user.id : null;
+    const { slug }     = req.params;
+    const answers      = parseAnswers(req.body.answers);
+    const locationSlug = req.body.locationSlug || null;
+    const scheduleId   = req.body.schedule_id  || null;
+    const userId       = req.user ? req.user.id : null;
 
     let location_id = null;
     if (locationSlug) {
@@ -131,15 +132,19 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
 
     await client.query('BEGIN');
 
+    // ── 1. Insert the submission ───────────────────────────────────────────
     const { rows: sub } = await client.query(
-      `INSERT INTO form_submissions (category_id, location_id, answers, user_id)
-       VALUES ($1, $2, $3, $4) RETURNING id, submission_uuid`,
+      `INSERT INTO form_submissions
+         (category_id, location_id, answers, user_id, overall_status)
+       VALUES ($1, $2, $3, $4, 'submitted')
+       RETURNING id, submission_uuid`,
       [cats[0].id, location_id, JSON.stringify(answers), userId]
     );
     const submissionId   = sub[0].id;
     const submissionUuid = sub[0].submission_uuid;
 
-    if (req.files && req.files.length) {
+    // ── 2. Insert images into submission_images (legacy, keep for compat) ──
+    if (req.files?.length) {
       for (const file of req.files) {
         const imageBuffer = fs.readFileSync(file.path);
         await client.query(
@@ -148,28 +153,62 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
            VALUES ($1,$2,$3,$4,$5,$6)`,
           [submissionId, file.filename, file.originalname, file.mimetype, file.size, imageBuffer]
         );
-        fs.unlinkSync(file.path); // clean up temp file
+        fs.unlinkSync(file.path);
       }
+    }
+
+    // ── 3. Create round 1 record ───────────────────────────────────────────
+    const { rows: roundRows } = await client.query(
+      `INSERT INTO inspection_rounds
+         (submission_id, round_number, inspector_id, answers, status, submitted_at)
+       VALUES ($1, 1, $2, $3, 'submitted', NOW())
+       RETURNING id`,
+      [submissionId, userId, JSON.stringify(answers)]
+    );
+    const roundId = roundRows[0].id;
+
+    // ── 4. Also store images in round_images for round 1 ──────────────────
+    // Re-read files aren't available after unlinkSync above, so we copy
+    // image_data from submission_images into round_images
+    await client.query(
+      `INSERT INTO round_images
+         (round_id, filename, original_name, mimetype, size, image_data, uploaded_at)
+       SELECT $1, filename, original_name, mimetype, size, image_data, uploaded_at
+       FROM submission_images
+       WHERE submission_id = $2`,
+      [roundId, submissionId]
+    );
+
+    // ── 5. Link submission to schedule if provided ────────────────────────
+    if (scheduleId) {
+      await client.query(
+        `UPDATE inspection_schedules
+         SET submission_id = $1
+         WHERE id = $2`,
+        [submissionId, scheduleId]
+      );
     }
 
     await client.query('COMMIT');
     res.json({ submissionUuid });
 
-    // Notify all admins about the new submission (fire-and-forget)
+    // ── 6. Notify admins (fire-and-forget) ────────────────────────────────
     pool.query(
       `SELECT id FROM users WHERE role_id IN (
          SELECT id FROM roles WHERE name IN ('global_admin', 'local_admin')
        )`
     ).then(({ rows: admins }) => {
-      const adminIds = admins.map(r => r.id);
+      const adminIds     = admins.map(r => r.id);
+      const locationPart = locationSlug ? ` at ${locationSlug}` : '';
       return createNotifications(
         adminIds,
         'submission',
-        'New Form Submission',
-        `A new inspection form was submitted for "${cats[0].name}"`,
+        `New Submission: ${cats[0].name}`,
+        `A new "${cats[0].name}" inspection was submitted${locationPart}.`,
         `/submissions/${submissionUuid}`
       );
     }).catch(err => console.error('[notifications] submission trigger failed:', err));
+
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);

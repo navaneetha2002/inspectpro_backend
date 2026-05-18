@@ -152,6 +152,7 @@ router.patch(
       const { rows: updated } = await pool.query(
         `UPDATE form_submissions
          SET status       = $1,
+            overall_status = $1,
              review_notes = $2,
              reviewed_by  = $3,
              reviewed_at  = NOW()
