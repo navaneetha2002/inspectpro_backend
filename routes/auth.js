@@ -91,9 +91,9 @@ router.post(
     }
 
       const countResult = await pool.query(
-  `SELECT MAX(CAST(SUBSTRING(user_id FROM 4) AS INTEGER)) as max_id 
-   FROM users 
-   WHERE user_id LIKE 'US_%' AND user_id ~ '^US_[0-9]+$'`
+  `SELECT MAX(CAST(SUBSTRING(user_id FROM 4) AS BIGINT)) as max_id
+   FROM users
+   WHERE user_id LIKE 'US_%' AND user_id ~ '^US_[0-9]+$' AND LENGTH(SUBSTRING(user_id FROM 4)) <= 6`
 );
 const maxId  = countResult.rows[0].max_id || 0;
 const userId = `US_${String(maxId + 1).padStart(3, '0')}`;
