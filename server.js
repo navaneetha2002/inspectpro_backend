@@ -6,6 +6,7 @@ const fs      = require('fs');
 const path    = require('path');
 const pool    = require('./db/db');   // ✅ your existing db.js
 const { authenticateToken } = require('./middleware/auth');
+const roundsRouter = require('./routes/rounds');
 
 
 
@@ -34,6 +35,7 @@ app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/permissions', require('./routes/permissions'));
 app.use('/api/schedules',      require('./routes/schedules'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/submissions/:uuid/rounds', roundsRouter);
 
 const PORT = process.env.PORT || 3000;
 
