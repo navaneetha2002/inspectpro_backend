@@ -8,10 +8,18 @@ const { authenticateToken } = require('../middleware/auth');
 router.get('/', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, type, title, message, is_read, action_url, created_at
-       FROM notifications
-       WHERE user_id = $1
-       ORDER BY created_at DESC
+      `SELECT n.id, n.type, n.title, n.message, n.is_read, n.action_url, n.created_at,
+              CASE
+                WHEN n.type = 'schedule' AND s.assigned_to = n.user_id THEN 'inspector'
+                WHEN n.type = 'schedule' AND s.attendee_id = n.user_id THEN 'attendee'
+                ELSE NULL
+              END AS assigned_role
+       FROM notifications n
+       LEFT JOIN inspection_schedules s
+         ON n.type = 'schedule'
+        AND s.id = CAST(NULLIF(SUBSTRING(n.action_url FROM '/schedules/(\\d+)'), '') AS INTEGER)
+       WHERE n.user_id = $1
+       ORDER BY n.created_at DESC
        LIMIT 50`,
       [req.user.id]
     );
