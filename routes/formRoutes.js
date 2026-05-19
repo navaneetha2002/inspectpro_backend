@@ -130,6 +130,24 @@ router.post('/:slug/submit', optionalAuth, upload.array('images', 10), async (re
     const { rows: cats } = await pool.query('SELECT * FROM categories WHERE slug=$1', [slug]);
     if (!cats.length) return res.status(404).json({ error: 'Category not found' });
 
+    // ── Time-window check for inspectors ─────────────────────────────────────
+    if (scheduleId && req.user?.role === 'inspector') {
+      const { rows: schedRows } = await pool.query(
+        'SELECT scheduled_at, submission_deadline FROM inspection_schedules WHERE id = $1',
+        [scheduleId]
+      );
+      if (schedRows.length) {
+        const now = new Date();
+        const { scheduled_at, submission_deadline } = schedRows[0];
+        if (scheduled_at && now < new Date(scheduled_at)) {
+          return res.status(403).json({ error: 'Inspection has not started yet.' });
+        }
+        if (submission_deadline && now > new Date(submission_deadline)) {
+          return res.status(403).json({ error: 'Submission deadline has passed. Ask your coordinator to extend the deadline.' });
+        }
+      }
+    }
+
     await client.query('BEGIN');
 
     // ── 1. Insert the submission ───────────────────────────────────────────

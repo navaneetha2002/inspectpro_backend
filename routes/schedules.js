@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
-const { authenticateToken, authorizePermission } = require('../middleware/auth');
+const { authenticateToken, authorizePermission, authorizeRoles } = require('../middleware/auth');
 const { createNotification, createNotifications } = require('../db/notifications');
 
 // Accepts either a numeric id or a username string; returns the numeric user id or null.
@@ -187,9 +187,9 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
 });
 
 // POST /api/schedules — create a schedule
-// Body: { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, notes }
+// Body: { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, submission_deadline, notes }
 router.post('/', authenticateToken, authorizePermission('create_schedule'), async (req, res, next) => {
-  const { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, notes } = req.body;
+  const { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, submission_deadline, notes } = req.body;
 
   if (!title || !assigned_to || !scheduled_at) {
     return res.status(400).json({ error: 'title, assigned_to, and scheduled_at are required' });
@@ -199,19 +199,20 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
     const resolvedAttendeeId = await resolveUserId(attendee_id);
     const { rows } = await pool.query(
       `INSERT INTO inspection_schedules
-         (title, category_id, location_id, assigned_to, attendee_id, created_by, scheduled_at, due_at, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (title, category_id, location_id, assigned_to, attendee_id, created_by, scheduled_at, due_at, submission_deadline, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         title,
-        category_id       || null,
-        location_id       || null,
+        category_id          || null,
+        location_id          || null,
         assigned_to,
         resolvedAttendeeId,
         req.user.id,
         scheduled_at,
-        due_at            || null,
-        notes             || null,
+        due_at               || null,
+        submission_deadline  || null,
+        notes                || null,
       ]
     );
     const schedule = rows[0];
@@ -219,11 +220,14 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
 
     // Notify assigned inspector and attendee with role-specific messages (fire-and-forget)
     const notifUrl = `/schedules/${schedule.id}`;
+    const deadlineNote = submission_deadline
+      ? ` Submit by: ${new Date(submission_deadline).toLocaleString()}.`
+      : '';
     createNotification(
       Number(assigned_to),
       'schedule',
       'New Inspection Assigned',
-      `You have been assigned as Inspector for: "${title}"`,
+      `You have been assigned as Inspector for: "${title}".${deadlineNote}`,
       notifUrl
     ).catch(err => console.error('[notifications] inspector notify failed:', err));
 
@@ -244,7 +248,7 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
 
 // PUT /api/schedules/:id — full update (admin only)
 router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), async (req, res, next) => {
-  const { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, notes, status } = req.body;
+  const { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, submission_deadline, notes, status } = req.body;
   const allowed = ['pending', 'in_progress', 'completed', 'cancelled'];
 
   if (status && !allowed.includes(status)) {
@@ -255,19 +259,20 @@ router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), a
     const resolvedAttendeeId = await resolveUserId(attendee_id);
     const { rows } = await pool.query(
       `UPDATE inspection_schedules SET
-         title        = COALESCE($1, title),
-         category_id  = COALESCE($2, category_id),
-         location_id  = COALESCE($3, location_id),
-         assigned_to  = COALESCE($4, assigned_to),
-         attendee_id  = COALESCE($5, attendee_id),
-         scheduled_at = COALESCE($6, scheduled_at),
-         due_at       = COALESCE($7, due_at),
-         notes        = COALESCE($8, notes),
-         status       = COALESCE($9, status),
-         updated_at   = NOW()
-       WHERE id = $10
+         title               = COALESCE($1, title),
+         category_id         = COALESCE($2, category_id),
+         location_id         = COALESCE($3, location_id),
+         assigned_to         = COALESCE($4, assigned_to),
+         attendee_id         = COALESCE($5, attendee_id),
+         scheduled_at        = COALESCE($6, scheduled_at),
+         due_at              = COALESCE($7, due_at),
+         submission_deadline = COALESCE($8, submission_deadline),
+         notes               = COALESCE($9, notes),
+         status              = COALESCE($10, status),
+         updated_at          = NOW()
+       WHERE id = $11
        RETURNING *`,
-      [title, category_id, location_id, assigned_to, resolvedAttendeeId, scheduled_at, due_at, notes, status, req.params.id]
+      [title, category_id, location_id, assigned_to, resolvedAttendeeId, scheduled_at, due_at, submission_deadline, notes, status, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Schedule not found' });
     res.json(rows[0]);
@@ -276,6 +281,49 @@ router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), a
     next(err);
   }
 });
+
+// PATCH /api/schedules/:id/extend-deadline
+// Allows global_admin, local_admin, and coordinator to extend the submission deadline
+router.patch('/:id/extend-deadline', authenticateToken,
+  authorizeRoles('global_admin', 'local_admin', 'coordinator'),
+  async (req, res, next) => {
+    try {
+      const { submission_deadline } = req.body;
+      if (!submission_deadline) {
+        return res.status(400).json({ error: 'submission_deadline is required' });
+      }
+
+      const { role, location_id, id: userId } = req.user;
+
+      // local_admin can only extend deadlines for schedules in their location
+      // coordinator can only extend deadlines for schedules they created
+      let whereClause, params;
+      if (role === 'global_admin') {
+        whereClause = 'WHERE id = $2';
+        params = [submission_deadline, req.params.id];
+      } else if (role === 'local_admin') {
+        whereClause = 'WHERE id = $2 AND location_id = $3';
+        params = [submission_deadline, req.params.id, location_id];
+      } else {
+        // coordinator
+        whereClause = 'WHERE id = $2 AND created_by = $3';
+        params = [submission_deadline, req.params.id, userId];
+      }
+
+      const { rows } = await pool.query(
+        `UPDATE inspection_schedules
+         SET submission_deadline = $1, updated_at = NOW()
+         ${whereClause}
+         RETURNING *`,
+        params
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: 'Schedule not found or not authorised to extend' });
+      }
+      res.json(rows[0]);
+    } catch (err) { next(err); }
+  }
+);
 
 // PATCH /api/schedules/:id/status
 // Admins: any schedule
@@ -323,8 +371,21 @@ router.patch('/:id/status', authenticateToken, async (req, res, next) => {
 });
 
 // DELETE /api/schedules/:id
-router.delete('/:id', authenticateToken, authorizePermission('manage_schedules'), async (req, res, next) => {
+router.delete('/:id', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   try {
+    const { role, location_id } = req.user;
+
+    // local_admin can only delete schedules within their location
+    if (role === 'local_admin') {
+      const { rows: check } = await pool.query(
+        'SELECT id FROM inspection_schedules WHERE id = $1 AND location_id = $2',
+        [req.params.id, location_id]
+      );
+      if (!check.length) {
+        return res.status(403).json({ error: 'Forbidden: schedule not in your location' });
+      }
+    }
+
     const { rows } = await pool.query(
       'DELETE FROM inspection_schedules WHERE id = $1 RETURNING id',
       [req.params.id]
