@@ -127,6 +127,24 @@ router.post('/', authenticateToken,
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
 
+      // Time-window check for inspectors
+      if (req.user.role === 'inspector') {
+        const { rows: schedRows } = await pool.query(
+          'SELECT scheduled_at, submission_deadline FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+          [sub.id]
+        );
+        if (schedRows.length) {
+          const now = new Date();
+          const { scheduled_at, submission_deadline } = schedRows[0];
+          if (scheduled_at && now < new Date(scheduled_at)) {
+            return res.status(403).json({ error: 'Inspection has not started yet.' });
+          }
+          if (submission_deadline && now > new Date(submission_deadline)) {
+            return res.status(403).json({ error: 'Submission deadline has passed. Ask your coordinator to extend the deadline.' });
+          }
+        }
+      }
+
       // Only allow submission if overall_status allows it
       const allowedStatuses = ['pending', 'under_review'];
       if (!allowedStatuses.includes(sub.overall_status)) {
