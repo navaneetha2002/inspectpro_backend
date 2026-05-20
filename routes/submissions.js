@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../db/db');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+const { createNotification, createNotifications } = require('../db/notifications');
 
 // GET /api/submissions
 router.get('/', authenticateToken, async (req, res, next) => {
@@ -16,13 +17,15 @@ router.get('/', authenticateToken, async (req, res, next) => {
         `SELECT fs.*, c.name AS category_name, l.name AS location_name,
                 u.username AS submitted_by,
                 r.username AS reviewed_by_username,
-                COUNT(si.id) AS image_count
+                COUNT(si.id) AS image_count,
+                (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_title,
+                (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_id
          FROM form_submissions fs
          LEFT JOIN categories c ON c.id = fs.category_id
          LEFT JOIN locations l ON l.id = fs.location_id
          LEFT JOIN submission_images si ON si.submission_id = fs.id
          LEFT JOIN users u ON u.id = fs.user_id
-         LEFT JOIN users r ON r.id = fs.reviewed_by 
+         LEFT JOIN users r ON r.id = fs.reviewed_by
          GROUP BY fs.id, c.name, l.name, u.username, r.username
          ORDER BY fs.submitted_at DESC`
       ));
@@ -30,7 +33,9 @@ router.get('/', authenticateToken, async (req, res, next) => {
       // Regular user — only their own submissions
       ({ rows } = await pool.query(
         `SELECT fs.*, c.name AS category_name, l.name AS location_name,
-                COUNT(si.id) AS image_count
+                COUNT(si.id) AS image_count,
+                (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_title,
+                (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_id
          FROM form_submissions fs
          LEFT JOIN categories c ON c.id = fs.category_id
          LEFT JOIN locations l ON l.id = fs.location_id
@@ -59,11 +64,17 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
 
       // Admin can view any submission
       query = `
-        SELECT fs.*, c.name AS category_name, l.name AS location_name, r.username AS reviewed_by_username
+        SELECT fs.*, c.name AS category_name, l.name AS location_name,
+               r.username AS reviewed_by_username,
+               sched.schedule_id, sched.attendee_id, sched.assigned_to, sched.title AS schedule_title
         FROM form_submissions fs
         LEFT JOIN categories c ON c.id = fs.category_id
         LEFT JOIN locations l ON l.id = fs.location_id
         LEFT JOIN users r ON r.id = fs.reviewed_by
+        LEFT JOIN LATERAL (
+          SELECT id AS schedule_id, attendee_id, assigned_to, title FROM inspection_schedules
+          WHERE submission_id = fs.id LIMIT 1
+        ) sched ON TRUE
         WHERE fs.submission_uuid=$1
       `;
 
@@ -72,11 +83,17 @@ router.get('/:uuid', authenticateToken, async (req, res, next) => {
     } else {
        // Normal user can only view their own submission
       query = `
-        SELECT fs.*, c.name AS category_name, l.name AS location_name, r.username AS reviewed_by_username
+        SELECT fs.*, c.name AS category_name, l.name AS location_name,
+               r.username AS reviewed_by_username,
+               sched.schedule_id, sched.attendee_id, sched.assigned_to, sched.title AS schedule_title
         FROM form_submissions fs
         LEFT JOIN categories c ON c.id = fs.category_id
         LEFT JOIN locations l ON l.id = fs.location_id
         LEFT JOIN users r ON r.id = fs.reviewed_by
+        LEFT JOIN LATERAL (
+          SELECT id AS schedule_id, attendee_id, assigned_to, title FROM inspection_schedules
+          WHERE submission_id = fs.id LIMIT 1
+        ) sched ON TRUE
         WHERE fs.submission_uuid=$1
         AND (
             fs.user_id = $2
@@ -162,6 +179,43 @@ router.patch(
       );
 
       res.json({ success: true, submission: updated[0] });
+
+      // Notify attendee (and admins) when inspector rejects the initial inspection
+      if (status === 'rejected') {
+        const actionUrl = `/submissions/${req.params.uuid}`;
+        pool.query(
+          'SELECT assigned_to, attendee_id FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+          [submission.id]
+        ).then(async ({ rows: sched }) => {
+          const { rows: admins } = await pool.query(
+            `SELECT id FROM users WHERE role_id IN (SELECT id FROM roles WHERE name = 'global_admin')`
+          );
+          const adminIds    = admins.map(r => r.id);
+          const attendeeId  = sched[0]?.attendee_id;
+          const inspectorId = sched[0]?.assigned_to;
+
+          const notesStr = review_notes ? ` Notes: ${review_notes}.` : '';
+
+          if (attendeeId) {
+            await createNotification(
+              attendeeId, 'submission',
+              'Inspection Rejected — Action Required',
+              `Your inspection was rejected.${notesStr} Please review and resubmit.`,
+              actionUrl
+            );
+          }
+
+          const othersIds = [...new Set([inspectorId, ...adminIds].filter(id => id && id !== attendeeId))];
+          if (othersIds.length) {
+            await createNotifications(
+              othersIds, 'submission',
+              'Inspection Rejected',
+              `Inspector rejected the inspection.${notesStr}`,
+              actionUrl
+            );
+          }
+        }).catch(err => console.error('[notifications] initial-rejection failed:', err));
+      }
     } catch (err) { next(err); }
   }
 );
@@ -175,10 +229,18 @@ router.delete('/:uuid', authenticateToken, authorizeRoles('global_admin', 'local
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
 
-    // Images are deleted automatically via ON DELETE CASCADE
+    const submissionId = rows[0].id;
+
+    // Delete linked schedule before submission (FK is ON DELETE SET NULL, so do it first)
     await pool.query(
-      'DELETE FROM form_submissions WHERE submission_uuid=$1',
-      [req.params.uuid]
+      'DELETE FROM inspection_schedules WHERE submission_id = $1',
+      [submissionId]
+    );
+
+    // Images and rounds are deleted automatically via ON DELETE CASCADE
+    await pool.query(
+      'DELETE FROM form_submissions WHERE id=$1',
+      [submissionId]
     );
     res.json({ success: true });
   } catch (err) { next(err); }

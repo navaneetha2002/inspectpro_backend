@@ -65,6 +65,12 @@ router.get('/', authenticateToken, async (req, res, next) => {
     const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
     if (!sub) return res.status(404).json({ error: 'Not found' });
 
+    const { rows: schedRows } = await pool.query(
+      'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+      [sub.id]
+    );
+    const scheduleTitle = schedRows[0]?.title ?? null;
+
     const { rows } = await pool.query(
       `SELECT
          ir.id, ir.round_number, ir.status, ir.answers,
@@ -110,6 +116,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
       overall_status:  sub.overall_status,
       current_round:   sub.current_round,
       max_rounds:      sub.max_rounds,
+      schedule_title:  scheduleTitle,
       rounds:          rows,
     });
   } catch (err) { next(err); }
@@ -126,6 +133,12 @@ router.post('/', authenticateToken,
     try {
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
+
+      const { rows: schedTitleRows } = await pool.query(
+        'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+        [sub.id]
+      );
+      const scheduleTitle = schedTitleRows[0]?.title ?? sub.submission_uuid;
 
       // Only allow submission if overall_status allows it
       const allowedStatuses = ['pending', 'submitted', 'under_review', 'rejected'];
@@ -224,8 +237,8 @@ router.post('/', authenticateToken,
         createNotifications(
           ids,
           'submission',
-          `Inspection Submitted — Round ${roundNumber}`,
-          `Inspector submitted Round ${roundNumber} inspection for ${sub.submission_uuid}.`,
+          `${scheduleTitle} — Round ${roundNumber} Submitted`,
+          `Inspector submitted Round ${roundNumber} inspection for "${scheduleTitle}".`,
           `/submissions/${sub.submission_uuid}`
         )
       ).catch(err => console.error('[notifications] inspector-submit failed:', err));
@@ -249,6 +262,12 @@ router.patch('/:roundId/decision', authenticateToken,
     try {
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
+
+      const { rows: reviewSchedRows } = await pool.query(
+        'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+        [sub.id]
+      );
+      const scheduleTitle = reviewSchedRows[0]?.title ?? sub.submission_uuid;
 
       const { status, review_notes, attendee_review_deadline } = req.body;
 
@@ -328,8 +347,8 @@ router.patch('/:roundId/decision', authenticateToken,
         // Notify everyone: approved
         getNotifyIds(sub.id).then(ids =>
           createNotifications(ids, 'submission',
-            `Round ${round.round_number} Approved`,
-            `Inspector approved Round ${round.round_number}.`,
+            `${scheduleTitle} — Round ${round.round_number} Approved`,
+            `Inspector approved Round ${round.round_number} for "${scheduleTitle}".`,
             actionUrl)
         ).catch(err => console.error('[notifications] round-approved failed:', err));
       } else {
@@ -355,8 +374,8 @@ router.patch('/:roundId/decision', authenticateToken,
           if (attendeeId) {
             const { createNotification } = require('../db/notifications');
             await createNotification(attendeeId, 'submission',
-              `Round ${round.round_number} Rejected — Action Required`,
-              `Your inspection Round ${round.round_number} was rejected.${notesStr}${deadlineStr}`,
+              `${scheduleTitle} — Round ${round.round_number} Rejected`,
+              `Your inspection Round ${round.round_number} for "${scheduleTitle}" was rejected.${notesStr}${deadlineStr}`,
               actionUrl
             );
           }
@@ -365,8 +384,8 @@ router.patch('/:roundId/decision', authenticateToken,
           const othersIds = [...new Set([inspectorId, ...adminIds].filter(id => id && id !== attendeeId))];
           if (othersIds.length) {
             await createNotifications(othersIds, 'submission',
-              `Round ${round.round_number} Rejected`,
-              `Inspector rejected Round ${round.round_number}.${notesStr}${deadlineStr}`,
+              `${scheduleTitle} — Round ${round.round_number} Rejected`,
+              `Inspector rejected Round ${round.round_number} for "${scheduleTitle}".${notesStr}${deadlineStr}`,
               actionUrl
             );
           }
@@ -495,6 +514,12 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
       return res.status(409).json({ error: 'Submission is not in rejected state.' });
     }
 
+    const { rows: reinspectSchedRows } = await pool.query(
+      'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+      [sub.id]
+    );
+    const scheduleTitle = reinspectSchedRows[0]?.title ?? sub.submission_uuid;
+
     // No round cap — re-inspections are unlimited
 
     // Enforce attendee review deadline
@@ -548,8 +573,8 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
       createNotifications(
         ids,
         'submission',
-        `Reinspection Required — Round ${nextRound}`,
-        `Attendee submitted their review. Inspector must complete Round ${nextRound} reinspection by ${inspectorDeadline.toLocaleString()}.`,
+        `${scheduleTitle} — Reinspection Required Round ${nextRound}`,
+        `Attendee submitted their review for "${scheduleTitle}". Inspector must complete Round ${nextRound} reinspection by ${inspectorDeadline.toLocaleString()}.`,
         `/submissions/${sub.submission_uuid}`
       )
     ).catch(err => console.error('[notifications] attendee-submit failed:', err));
