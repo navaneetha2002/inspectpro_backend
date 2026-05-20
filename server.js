@@ -7,7 +7,7 @@ const path    = require('path');
 const pool    = require('./db/db');   // ✅ your existing db.js
 const { authenticateToken } = require('./middleware/auth');
 const roundsRouter = require('./routes/rounds');
-const { checkMissedDeadlines } = require('./jobs/deadlineNotifier');
+const { checkMissedDeadlines, checkMissedAttendeeDeadlines, checkMissedReinspectionDeadlines } = require('./jobs/deadlineNotifier');
 
 
 
@@ -44,5 +44,9 @@ app.listen(PORT, () => {
   console.log(`Backend running on port ${PORT}`);
   // Check for missed inspection deadlines every 60 seconds
   checkMissedDeadlines();
+  checkMissedAttendeeDeadlines();
+  checkMissedReinspectionDeadlines();
   setInterval(checkMissedDeadlines, 60 * 1000);
+  setInterval(checkMissedAttendeeDeadlines, 60 * 1000);
+  setInterval(checkMissedReinspectionDeadlines, 60 * 1000);
 });

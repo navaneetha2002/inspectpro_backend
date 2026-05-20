@@ -164,11 +164,15 @@ CREATE TABLE IF NOT EXISTS inspection_rounds (
   answers       JSONB,
   status        VARCHAR(20) NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'submitted', 'approved', 'rejected')),
-  reviewed_by   INT REFERENCES users(id) ON DELETE SET NULL,
-  reviewed_at   TIMESTAMPTZ,
-  review_notes  TEXT,
-  submitted_at  TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  reviewed_by                  INT REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at                  TIMESTAMPTZ,
+  review_notes                 TEXT,
+  submitted_at                 TIMESTAMPTZ,
+  attendee_review_deadline      TIMESTAMPTZ,
+  attendee_deadline_notified_at TIMESTAMPTZ,
+  inspector_deadline            TIMESTAMPTZ,
+  inspector_deadline_notified_at TIMESTAMPTZ,
+  created_at                    TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (submission_id, round_number)
 );
 
@@ -403,10 +407,18 @@ CREATE INDEX IF NOT EXISTS idx_attendee_round_images_round
   ON attendee_round_images(round_id);
 
 -- Schedules
-CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to   ON inspection_schedules(assigned_to);
-CREATE INDEX IF NOT EXISTS idx_schedules_attendee_id   ON inspection_schedules(attendee_id);
-CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at  ON inspection_schedules(scheduled_at);
-CREATE INDEX IF NOT EXISTS idx_schedules_status        ON inspection_schedules(status);
+CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to        ON inspection_schedules(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_schedules_attendee_id        ON inspection_schedules(attendee_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at       ON inspection_schedules(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_status             ON inspection_schedules(status);
+CREATE INDEX IF NOT EXISTS idx_schedules_submission_deadline ON inspection_schedules(submission_deadline)
+  WHERE deadline_notified_at IS NULL;
+
+-- Inspection round deadlines (used by background deadline notifier)
+CREATE INDEX IF NOT EXISTS idx_rounds_attendee_deadline  ON inspection_rounds(attendee_review_deadline)
+  WHERE attendee_deadline_notified_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_rounds_inspector_deadline ON inspection_rounds(inspector_deadline)
+  WHERE inspector_deadline_notified_at IS NULL;
 
 -- Notifications
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id   ON notifications(user_id);
