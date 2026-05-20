@@ -265,8 +265,8 @@ router.patch('/:roundId/decision', authenticateToken,
         );
 
       } else {
-        // Rejected — check if re-inspection is still allowed
-        const canReinspect = sub.current_round < sub.max_rounds;
+        // Rejected — re-inspection is always allowed (no round cap)
+        const canReinspect = true;
 
         if (canReinspect) {
           newOverallStatus = 'rejected';
@@ -415,9 +415,7 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
       return res.status(409).json({ error: 'Submission is not in rejected state.' });
     }
 
-    if (sub.current_round >= sub.max_rounds) {
-      return res.status(409).json({ error: 'Maximum re-inspections reached.' });
-    }
+    // No round cap — re-inspections are unlimited
 
     // Verify attendee
     const { rows: schedRows } = await pool.query(
