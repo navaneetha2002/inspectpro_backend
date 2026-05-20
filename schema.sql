@@ -407,10 +407,18 @@ CREATE INDEX IF NOT EXISTS idx_attendee_round_images_round
   ON attendee_round_images(round_id);
 
 -- Schedules
-CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to   ON inspection_schedules(assigned_to);
-CREATE INDEX IF NOT EXISTS idx_schedules_attendee_id   ON inspection_schedules(attendee_id);
-CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at  ON inspection_schedules(scheduled_at);
-CREATE INDEX IF NOT EXISTS idx_schedules_status        ON inspection_schedules(status);
+CREATE INDEX IF NOT EXISTS idx_schedules_assigned_to        ON inspection_schedules(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_schedules_attendee_id        ON inspection_schedules(attendee_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_scheduled_at       ON inspection_schedules(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_status             ON inspection_schedules(status);
+CREATE INDEX IF NOT EXISTS idx_schedules_submission_deadline ON inspection_schedules(submission_deadline)
+  WHERE deadline_notified_at IS NULL;
+
+-- Inspection round deadlines (used by background deadline notifier)
+CREATE INDEX IF NOT EXISTS idx_rounds_attendee_deadline  ON inspection_rounds(attendee_review_deadline)
+  WHERE attendee_deadline_notified_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_rounds_inspector_deadline ON inspection_rounds(inspector_deadline)
+  WHERE inspector_deadline_notified_at IS NULL;
 
 -- Notifications
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id   ON notifications(user_id);
