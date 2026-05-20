@@ -127,34 +127,60 @@ router.post('/', authenticateToken,
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
 
-      // Time-window check for inspectors
-      if (req.user.role === 'inspector') {
-        const { rows: schedRows } = await pool.query(
-          'SELECT scheduled_at, submission_deadline FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
-          [sub.id]
-        );
-        if (schedRows.length) {
-          const now = new Date();
-          const { scheduled_at, submission_deadline } = schedRows[0];
-          if (scheduled_at && now < new Date(scheduled_at)) {
-            return res.status(403).json({ error: 'Inspection has not started yet.' });
-          }
-          if (submission_deadline && now > new Date(submission_deadline)) {
-            return res.status(403).json({ error: 'Submission deadline has passed. Ask your coordinator to extend the deadline.' });
-          }
-        }
-      }
-
       // Only allow submission if overall_status allows it
-      const allowedStatuses = ['pending', 'under_review'];
+      const allowedStatuses = ['pending', 'submitted', 'under_review', 'rejected'];
       if (!allowedStatuses.includes(sub.overall_status)) {
         return res.status(409).json({
           error: `Cannot submit a new round — submission is '${sub.overall_status}'.`
         });
       }
 
-      const answers = JSON.parse(req.body.answers || '{}');
-      const roundNumber = sub.current_round;
+      // Compute the target round number up-front so the time-window check uses the correct round
+      let roundNumber = sub.current_round;
+      if (sub.overall_status === 'rejected') {
+        if (roundNumber >= sub.max_rounds) {
+          return res.status(409).json({ error: 'Maximum re-inspections reached.' });
+        }
+        roundNumber = roundNumber + 1;
+      }
+
+      // Time-window check for inspectors
+      if (req.user.role === 'inspector') {
+        if (roundNumber === 1) {
+          // Initial inspection — check schedule window
+          const { rows: schedRows } = await pool.query(
+            'SELECT scheduled_at, submission_deadline FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+            [sub.id]
+          );
+          if (schedRows.length) {
+            const now = new Date();
+            const { scheduled_at, submission_deadline } = schedRows[0];
+            if (scheduled_at && now < new Date(scheduled_at)) {
+              return res.status(403).json({ error: 'Inspection has not started yet.' });
+            }
+            if (submission_deadline && now > new Date(submission_deadline)) {
+              return res.status(403).json({ error: 'Submission deadline has passed. Ask your coordinator to extend the deadline.' });
+            }
+          }
+        } else {
+          // Reinspection — check the round's fixed 5-minute deadline
+          const { rows: rRows } = await pool.query(
+            'SELECT inspector_deadline FROM inspection_rounds WHERE submission_id = $1 AND round_number = $2',
+            [sub.id, roundNumber]
+          );
+          if (rRows[0]?.inspector_deadline && new Date() > new Date(rRows[0].inspector_deadline)) {
+            return res.status(403).json({ error: 'Reinspection deadline has passed.' });
+          }
+        }
+      }
+
+      const rawAnswers = req.body.answers;
+      let answers = {};
+      try {
+        answers = typeof rawAnswers === 'string'
+          ? JSON.parse(rawAnswers || '{}')
+          : (rawAnswers || {});
+      } catch { answers = {}; }
 
       await client.query('BEGIN');
 
@@ -184,10 +210,10 @@ router.post('/', authenticateToken,
         }
       }
 
-      // Update overall submission status to 'submitted'
+      // Advance overall status and sync current_round
       await client.query(
-        `UPDATE form_submissions SET overall_status = 'submitted' WHERE id = $1`,
-        [sub.id]
+        `UPDATE form_submissions SET overall_status = 'submitted', current_round = $1 WHERE id = $2`,
+        [roundNumber, sub.id]
       );
 
       await client.query('COMMIT');
@@ -224,7 +250,12 @@ router.patch('/:roundId/decision', authenticateToken,
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
 
-      const { status, review_notes } = req.body;
+      const { status, review_notes, attendee_review_deadline } = req.body;
+
+      // If no decision status provided, nothing to do
+      if (!status) {
+        return res.json({ success: true, overall_status: sub.overall_status });
+      }
       if (!['approved', 'rejected'].includes(status)) {
         return res.status(400).json({ error: "status must be 'approved' or 'rejected'" });
       }
@@ -246,9 +277,10 @@ router.patch('/:roundId/decision', authenticateToken,
       // Update the round
       await client.query(
         `UPDATE inspection_rounds
-         SET status = $1, review_notes = $2, reviewed_by = $3, reviewed_at = NOW()
+         SET status = $1, review_notes = $2, reviewed_by = $3, reviewed_at = NOW(),
+             attendee_review_deadline = $5
          WHERE id = $4`,
-        [status, review_notes ?? null, req.user.id, round.id]
+        [status, review_notes ?? null, req.user.id, round.id, attendee_review_deadline ?? null]
       );
 
       let newOverallStatus;
@@ -290,17 +322,56 @@ router.patch('/:roundId/decision', authenticateToken,
       await client.query('COMMIT');
       res.json({ success: true, overall_status: newOverallStatus });
 
-      // Notify inspector, attendee, and global admins
-      const statusLabel = status === 'approved' ? 'Approved' : 'Rejected';
-      getNotifyIds(sub.id).then(ids =>
-        createNotifications(
-          ids,
-          'submission',
-          `Round ${round.round_number} ${statusLabel}`,
-          `Inspector ${statusLabel.toLowerCase()} Round ${round.round_number}.${review_notes ? ` Notes: ${review_notes}` : ''}`,
-          `/submissions/${sub.submission_uuid}`
-        )
-      ).catch(err => console.error('[notifications] round-decision failed:', err));
+      // Notifications (fire-and-forget)
+      const actionUrl = `/submissions/${sub.submission_uuid}`;
+      if (status === 'approved') {
+        // Notify everyone: approved
+        getNotifyIds(sub.id).then(ids =>
+          createNotifications(ids, 'submission',
+            `Round ${round.round_number} Approved`,
+            `Inspector approved Round ${round.round_number}.`,
+            actionUrl)
+        ).catch(err => console.error('[notifications] round-approved failed:', err));
+      } else {
+        // Rejected — send tailored notification to attendee with deadline
+        // and a separate one to inspector + admins
+        pool.query(
+          'SELECT assigned_to, attendee_id FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+          [sub.id]
+        ).then(async ({ rows: sched }) => {
+          const { rows: admins } = await pool.query(
+            `SELECT id FROM users WHERE role_id IN (SELECT id FROM roles WHERE name = 'global_admin')`
+          );
+          const adminIds    = admins.map(r => r.id);
+          const attendeeId  = sched[0]?.attendee_id;
+          const inspectorId = sched[0]?.assigned_to;
+
+          const deadlineStr = attendee_review_deadline
+            ? ` Submit your review by: ${new Date(attendee_review_deadline).toLocaleString()}.`
+            : '';
+          const notesStr = review_notes ? ` Notes: ${review_notes}.` : '';
+
+          // Attendee: personalised message with deadline
+          if (attendeeId) {
+            const { createNotification } = require('../db/notifications');
+            await createNotification(attendeeId, 'submission',
+              `Round ${round.round_number} Rejected — Action Required`,
+              `Your inspection Round ${round.round_number} was rejected.${notesStr}${deadlineStr}`,
+              actionUrl
+            );
+          }
+
+          // Inspector + admins: general rejection info
+          const othersIds = [...new Set([inspectorId, ...adminIds].filter(id => id && id !== attendeeId))];
+          if (othersIds.length) {
+            await createNotifications(othersIds, 'submission',
+              `Round ${round.round_number} Rejected`,
+              `Inspector rejected Round ${round.round_number}.${notesStr}${deadlineStr}`,
+              actionUrl
+            );
+          }
+        }).catch(err => console.error('[notifications] round-rejected failed:', err));
+      }
 
     } catch (err) {
       await client.query('ROLLBACK');
@@ -332,6 +403,15 @@ router.post('/:roundId/remarks', authenticateToken, async (req, res, next) => {
     const isAdmin = ['global_admin', 'local_admin'].includes(req.user.role);
     if (!schedRows.length && !isAdmin) {
       return res.status(403).json({ error: 'Only the attendee can add remarks.' });
+    }
+
+    // Enforce attendee review deadline
+    const { rows: roundDeadline } = await pool.query(
+      'SELECT attendee_review_deadline FROM inspection_rounds WHERE id = $1',
+      [req.params.roundId]
+    );
+    if (roundDeadline[0]?.attendee_review_deadline && new Date() > new Date(roundDeadline[0].attendee_review_deadline)) {
+      return res.status(403).json({ error: 'Review deadline has passed. Contact your coordinator to extend the deadline.' });
     }
 
     // remarks = [{ question_id, remark }, ...]
@@ -419,6 +499,15 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
       return res.status(409).json({ error: 'Maximum re-inspections reached.' });
     }
 
+    // Enforce attendee review deadline
+    const { rows: roundDeadline } = await pool.query(
+      'SELECT attendee_review_deadline FROM inspection_rounds WHERE id = $1',
+      [req.params.roundId]
+    );
+    if (roundDeadline[0]?.attendee_review_deadline && new Date() > new Date(roundDeadline[0].attendee_review_deadline)) {
+      return res.status(403).json({ error: 'Review deadline has passed. Contact your coordinator to extend the deadline.' });
+    }
+
     // Verify attendee
     const { rows: schedRows } = await pool.query(
       'SELECT id FROM inspection_schedules WHERE submission_id = $1 AND attendee_id = $2',
@@ -433,10 +522,13 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
 
     await client.query('BEGIN');
 
-    // Create the next round record (pending — waiting for inspector)
+    // Create the next round with a fixed 5-minute reinspection deadline
+    // ON CONFLICT handles retries (e.g. previous attempt failed mid-transaction)
     await client.query(
-      `INSERT INTO inspection_rounds (submission_id, round_number, inspector_id, status)
-       VALUES ($1, $2, $3, 'pending')`,
+      `INSERT INTO inspection_rounds (submission_id, round_number, inspector_id, status, inspector_deadline)
+       VALUES ($1, $2, $3, 'pending', NOW() + INTERVAL '5 minutes')
+       ON CONFLICT (submission_id, round_number)
+       DO UPDATE SET status = 'pending', inspector_deadline = NOW() + INTERVAL '5 minutes'`,
       [sub.id, nextRound, sub.user_id]
     );
 
@@ -449,15 +541,17 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
     );
 
     await client.query('COMMIT');
-    res.json({ success: true, next_round: nextRound });
 
-    // Notify inspector, attendee, and global admins
+    const inspectorDeadline = new Date(Date.now() + 5 * 60 * 1000);
+    res.json({ success: true, next_round: nextRound, inspector_deadline: inspectorDeadline });
+
+    // Notify inspector, attendee, and global admins — include 5-minute deadline
     getNotifyIds(sub.id).then(ids =>
       createNotifications(
         ids,
         'submission',
-        `Review Submitted — Round ${nextRound} Ready`,
-        `Attendee submitted their review. Round ${nextRound} is ready for reinspection.`,
+        `Reinspection Required — Round ${nextRound}`,
+        `Attendee submitted their review. Inspector must complete Round ${nextRound} reinspection by ${inspectorDeadline.toLocaleString()}.`,
         `/submissions/${sub.submission_uuid}`
       )
     ).catch(err => console.error('[notifications] attendee-submit failed:', err));

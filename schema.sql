@@ -164,11 +164,15 @@ CREATE TABLE IF NOT EXISTS inspection_rounds (
   answers       JSONB,
   status        VARCHAR(20) NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'submitted', 'approved', 'rejected')),
-  reviewed_by   INT REFERENCES users(id) ON DELETE SET NULL,
-  reviewed_at   TIMESTAMPTZ,
-  review_notes  TEXT,
-  submitted_at  TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  reviewed_by                  INT REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at                  TIMESTAMPTZ,
+  review_notes                 TEXT,
+  submitted_at                 TIMESTAMPTZ,
+  attendee_review_deadline      TIMESTAMPTZ,
+  attendee_deadline_notified_at TIMESTAMPTZ,
+  inspector_deadline            TIMESTAMPTZ,
+  inspector_deadline_notified_at TIMESTAMPTZ,
+  created_at                    TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (submission_id, round_number)
 );
 
