@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS form_submissions (
 
   -- ── Multi-round re-inspection ─────────────────────────────────────────────
   current_round    INT NOT NULL DEFAULT 1,
-  max_rounds       INT NOT NULL DEFAULT 3,   -- 1 original + 2 re-inspections
+  max_rounds       INT NOT NULL DEFAULT 999,  -- effectively unlimited re-inspections
   overall_status   VARCHAR(20) NOT NULL DEFAULT 'pending'
     CHECK (overall_status IN (
       'pending',        -- not yet submitted
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS form_submissions (
       'approved',       -- inspector approved
       'rejected',       -- inspector rejected, attendee can add remarks
       'under_review',   -- attendee submitted remarks, awaiting re-inspection
-      'closed'          -- max rounds reached, no more re-inspections
+      'closed'          -- manually closed
     ))
 );
 

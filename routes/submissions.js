@@ -183,5 +183,19 @@ router.delete('/:uuid', authenticateToken, authorizeRoles('global_admin', 'local
     res.json({ success: true });
   } catch (err) { next(err); }
 });
+// GET /api/submissions/image/:id
+router.get('/image/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT image_data, mimetype, original_name FROM submission_images WHERE id = $1',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Image not found' });
 
+    const image = rows[0];
+    res.set('Content-Type', image.mimetype || 'image/jpeg');
+    res.set('Content-Disposition', `inline; filename="${image.original_name}"`);
+    res.send(image.image_data);
+  } catch (err) { next(err); }
+});
 module.exports = router;
