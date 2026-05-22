@@ -309,11 +309,13 @@ CREATE TABLE IF NOT EXISTS inspection_schedules (
   assigned_to   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   attendee_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_by    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  scheduled_at          TIMESTAMP NOT NULL,
-  due_at                TIMESTAMP,
-  submission_deadline   TIMESTAMP,
-  deadline_notified_at  TIMESTAMP,
-  status                VARCHAR(50) DEFAULT 'pending',
+  scheduled_at              TIMESTAMP   NOT NULL,
+  due_at                    TIMESTAMP,             -- inspector submission deadline (set by admin/coordinator)
+  submission_deadline       TIMESTAMP,             -- alias/legacy of due_at
+  deadline_notified_at      TIMESTAMP,             -- when inspector was notified of due_at
+  attendee_review_due       TIMESTAMPTZ,           -- review deadline set by inspector on rejection
+  attendee_review_notified_at TIMESTAMPTZ,         -- when attendee was notified of attendee_review_due
+  status                    VARCHAR(50) DEFAULT 'pending',
   notes         TEXT,
   submission_id INTEGER REFERENCES form_submissions(id) ON DELETE SET NULL,
   created_at    TIMESTAMP DEFAULT NOW(),
@@ -423,3 +425,8 @@ CREATE INDEX IF NOT EXISTS idx_rounds_inspector_deadline ON inspection_rounds(in
 -- Notifications
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id   ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_unread    ON notifications(user_id, is_read);
+
+-- Add alongside the other schedule indexes:
+CREATE INDEX IF NOT EXISTS idx_schedules_attendee_review_due
+  ON inspection_schedules(attendee_review_due)
+  WHERE attendee_review_notified_at IS NULL;

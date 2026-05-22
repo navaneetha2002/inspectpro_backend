@@ -241,18 +241,18 @@ router.post('/', authenticateToken,
 
 
 // ── PATCH /api/submissions/:uuid/rounds/:roundId/decision ────────────────────
-// Inspector approves or rejects a round
 router.patch('/:roundId/decision', authenticateToken,
   authorizeRoles('inspector', 'global_admin', 'local_admin'),
+  
   async (req, res, next) => {
     const client = await pool.connect();
     try {
+      console.log('PATCH /decision body:', req.body);
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
 
-      const { status, review_notes, attendee_review_deadline } = req.body;
+      const { status, review_notes, attendee_review_due } = req.body;
 
-      // If no decision status provided, nothing to do
       if (!status) {
         return res.json({ success: true, overall_status: sub.overall_status });
       }
@@ -260,7 +260,6 @@ router.patch('/:roundId/decision', authenticateToken,
         return res.status(400).json({ error: "status must be 'approved' or 'rejected'" });
       }
 
-      // Fetch the round
       const { rows: roundRows } = await pool.query(
         'SELECT * FROM inspection_rounds WHERE id = $1 AND submission_id = $2',
         [req.params.roundId, sub.id]
@@ -274,45 +273,75 @@ router.patch('/:roundId/decision', authenticateToken,
 
       await client.query('BEGIN');
 
-      // Update the round
+      // ── Update the round (no attendee_review_due here — wrong table) ──────
       await client.query(
         `UPDATE inspection_rounds
-         SET status = $1, review_notes = $2, reviewed_by = $3, reviewed_at = NOW(),
-             attendee_review_deadline = $5
+         SET status      = $1,
+             review_notes = $2,
+             reviewed_by  = $3,
+             reviewed_at  = NOW()
          WHERE id = $4`,
-        [status, review_notes ?? null, req.user.id, round.id, attendee_review_deadline ?? null]
+        [status, review_notes ?? null, req.user.id, round.id]
       );
 
       let newOverallStatus;
 
       if (status === 'approved') {
         newOverallStatus = 'approved';
-        // Sync back to legacy status column too
         await client.query(
           `UPDATE form_submissions
-           SET overall_status = 'approved', status = 'approved',
-               reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+           SET overall_status = 'approved',
+               status         = 'approved',
+               reviewed_by    = $1,
+               reviewed_at    = NOW(),
+               review_notes   = $2
            WHERE id = $3`,
           [req.user.id, review_notes ?? null, sub.id]
         );
 
+        // Clear attendee_review_due since it's no longer relevant
+        await client.query(
+          `UPDATE inspection_schedules
+           SET attendee_review_due = NULL
+           WHERE submission_id = $1`,
+          [sub.id]
+        );
+
       } else {
-        // Rejected — re-inspection is always allowed (no round cap)
-        const canReinspect = true;
+        // ── Rejected ──────────────────────────────────────────────────────────
+        const canReinspect = sub.current_round < sub.max_rounds;
 
         if (canReinspect) {
           newOverallStatus = 'rejected';
+
           await client.query(
-            `UPDATE form_submissions SET overall_status = 'rejected', status = 'rejected' WHERE id = $1`,
+            `UPDATE form_submissions
+             SET overall_status = 'rejected',
+                 status         = 'rejected'
+             WHERE id = $1`,
             [sub.id]
           );
+
+          // ✅ Save attendee review deadline on inspection_schedules
+          if (attendee_review_due) {
+            await client.query(
+              `UPDATE inspection_schedules
+               SET attendee_review_due = $1
+               WHERE submission_id = $2`,
+              [attendee_review_due, sub.id]
+            );
+          }
+
         } else {
-          // Max rounds reached — close it
+          // Max rounds reached
           newOverallStatus = 'closed';
           await client.query(
             `UPDATE form_submissions
-             SET overall_status = 'closed', status = 'rejected',
-                 reviewed_by = $1, reviewed_at = NOW(), review_notes = $2
+             SET overall_status = 'closed',
+                 status         = 'rejected',
+                 reviewed_by    = $1,
+                 reviewed_at    = NOW(),
+                 review_notes   = $2
              WHERE id = $3`,
             [req.user.id, review_notes ?? null, sub.id]
           );
@@ -322,56 +351,53 @@ router.patch('/:roundId/decision', authenticateToken,
       await client.query('COMMIT');
       res.json({ success: true, overall_status: newOverallStatus });
 
-      // Notifications (fire-and-forget)
+      // ── Notifications (fire-and-forget) ────────────────────────────────────
       const actionUrl = `/submissions/${sub.submission_uuid}`;
-      if (status === 'approved') {
-        // Notify everyone: approved
-        getNotifyIds(sub.id).then(ids =>
-          createNotifications(ids, 'submission',
+
+      pool.query(
+        'SELECT assigned_to, attendee_id FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+        [sub.id]
+      ).then(async ({ rows: sched }) => {
+        const { rows: admins } = await pool.query(
+          `SELECT id FROM users WHERE role_id IN (SELECT id FROM roles WHERE name = 'global_admin')`
+        );
+        const adminIds    = admins.map(r => r.id);
+        const attendeeId  = sched[0]?.attendee_id;
+        const inspectorId = sched[0]?.assigned_to;
+
+        if (status === 'approved') {
+          const ids = [...new Set([inspectorId, attendeeId, ...adminIds].filter(Boolean))];
+          await createNotifications(ids, 'submission',
             `Round ${round.round_number} Approved`,
             `Inspector approved Round ${round.round_number}.`,
-            actionUrl)
-        ).catch(err => console.error('[notifications] round-approved failed:', err));
-      } else {
-        // Rejected — send tailored notification to attendee with deadline
-        // and a separate one to inspector + admins
-        pool.query(
-          'SELECT assigned_to, attendee_id FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
-          [sub.id]
-        ).then(async ({ rows: sched }) => {
-          const { rows: admins } = await pool.query(
-            `SELECT id FROM users WHERE role_id IN (SELECT id FROM roles WHERE name = 'global_admin')`
+            actionUrl
           );
-          const adminIds    = admins.map(r => r.id);
-          const attendeeId  = sched[0]?.attendee_id;
-          const inspectorId = sched[0]?.assigned_to;
-
-          const deadlineStr = attendee_review_deadline
-            ? ` Submit your review by: ${new Date(attendee_review_deadline).toLocaleString()}.`
+        } else {
+          const deadlineStr = attendee_review_due
+            ? ` Submit your review by: ${new Date(attendee_review_due).toLocaleString()}.`
             : '';
           const notesStr = review_notes ? ` Notes: ${review_notes}.` : '';
 
           // Attendee: personalised message with deadline
           if (attendeeId) {
-            const { createNotification } = require('../db/notifications');
-            await createNotification(attendeeId, 'submission',
+            await createNotifications([attendeeId], 'submission',
               `Round ${round.round_number} Rejected — Action Required`,
               `Your inspection Round ${round.round_number} was rejected.${notesStr}${deadlineStr}`,
               actionUrl
             );
           }
 
-          // Inspector + admins: general rejection info
-          const othersIds = [...new Set([inspectorId, ...adminIds].filter(id => id && id !== attendeeId))];
-          if (othersIds.length) {
-            await createNotifications(othersIds, 'submission',
+          // Inspector + admins
+          const otherIds = [...new Set([inspectorId, ...adminIds].filter(id => id && id !== attendeeId))];
+          if (otherIds.length) {
+            await createNotifications(otherIds, 'submission',
               `Round ${round.round_number} Rejected`,
-              `Inspector rejected Round ${round.round_number}.${notesStr}${deadlineStr}`,
+              `Inspector rejected Round ${round.round_number}.${notesStr}`,
               actionUrl
             );
           }
-        }).catch(err => console.error('[notifications] round-rejected failed:', err));
-      }
+        }
+      }).catch(err => console.error('[notifications] round-decision failed:', err));
 
     } catch (err) {
       await client.query('ROLLBACK');
@@ -380,7 +406,7 @@ router.patch('/:roundId/decision', authenticateToken,
       client.release();
     }
   }
-);
+); 
 
 
 // ── POST /api/submissions/:uuid/rounds/:roundId/remarks ──────────────────────
@@ -520,28 +546,35 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
 
     await client.query('BEGIN');
 
+    const inspectorDeadline = new Date(Date.now() + 5 * 60 * 1000);
+
+  await client.query(
+  `UPDATE inspection_schedules
+   SET submission_deadline = $1,
+       attendee_review_due = NULL
+   WHERE submission_id = $2`,
+  [inspectorDeadline, sub.id]   // ← fixed
+);
+
     // Create the next round with a fixed 5-minute reinspection deadline
     // ON CONFLICT handles retries (e.g. previous attempt failed mid-transaction)
-    await client.query(
-      `INSERT INTO inspection_rounds (submission_id, round_number, inspector_id, status, inspector_deadline)
-       VALUES ($1, $2, $3, 'pending', NOW() + INTERVAL '5 minutes')
-       ON CONFLICT (submission_id, round_number)
-       DO UPDATE SET status = 'pending', inspector_deadline = NOW() + INTERVAL '5 minutes'`,
-      [sub.id, nextRound, sub.user_id]
-    );
+await client.query(
+  `INSERT INTO inspection_rounds
+     (submission_id, round_number, inspector_id, status, inspector_deadline)
+   VALUES ($1, $2, $3, 'pending', $4)`,
+  [sub.id, nextRound, sub.user_id, inspectorDeadline]   // ← fixed
+);
 
     // Advance the submission
-    await client.query(
-      `UPDATE form_submissions
-       SET current_round = $1, overall_status = 'under_review'
-       WHERE id = $2`,
-      [nextRound, sub.id]
-    );
+   await client.query(
+  `UPDATE form_submissions
+   SET current_round = $1, overall_status = 'under_review'
+   WHERE id = $2`,
+  [nextRound, sub.id]
+);
 
-    await client.query('COMMIT');
-
-    const inspectorDeadline = new Date(Date.now() + 5 * 60 * 1000);
-    res.json({ success: true, next_round: nextRound, inspector_deadline: inspectorDeadline });
+    // Sync the schedule's submission_deadline so the inspector sees the updated deadline in their modal
+    
 
     // Notify inspector, attendee, and global admins — include 5-minute deadline
     getNotifyIds(sub.id).then(ids =>
