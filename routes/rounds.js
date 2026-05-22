@@ -65,6 +65,12 @@ router.get('/', authenticateToken, async (req, res, next) => {
     const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
     if (!sub) return res.status(404).json({ error: 'Not found' });
 
+    const { rows: schedRows } = await pool.query(
+      'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+      [sub.id]
+    );
+    const scheduleTitle = schedRows[0]?.title ?? null;
+
     const { rows } = await pool.query(
       `SELECT
          ir.id, ir.round_number, ir.status, ir.answers,
@@ -110,6 +116,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
       overall_status:  sub.overall_status,
       current_round:   sub.current_round,
       max_rounds:      sub.max_rounds,
+      schedule_title:  scheduleTitle,
       rounds:          rows,
     });
   } catch (err) { next(err); }
@@ -126,6 +133,12 @@ router.post('/', authenticateToken,
     try {
       const sub = await resolveSubmission(req.params.uuid, req.user.id, req.user.role);
       if (!sub) return res.status(404).json({ error: 'Not found' });
+
+      const { rows: schedTitleRows } = await pool.query(
+        'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+        [sub.id]
+      );
+      const scheduleTitle = schedTitleRows[0]?.title ?? sub.submission_uuid;
 
       // Only allow submission if overall_status allows it
       const allowedStatuses = ['pending', 'submitted', 'under_review', 'rejected'];
@@ -210,9 +223,9 @@ router.post('/', authenticateToken,
         }
       }
 
-      // Advance overall status and sync current_round
+      // Advance overall status and sync current_round; bump submitted_at so the list shows the latest time
       await client.query(
-        `UPDATE form_submissions SET overall_status = 'submitted', current_round = $1 WHERE id = $2`,
+        `UPDATE form_submissions SET overall_status = 'submitted', current_round = $1, submitted_at = NOW() WHERE id = $2`,
         [roundNumber, sub.id]
       );
 
@@ -224,8 +237,8 @@ router.post('/', authenticateToken,
         createNotifications(
           ids,
           'submission',
-          `Inspection Submitted — Round ${roundNumber}`,
-          `Inspector submitted Round ${roundNumber} inspection for ${sub.submission_uuid}.`,
+          `${scheduleTitle} — Round ${roundNumber} Submitted`,
+          `Inspector submitted Round ${roundNumber} inspection for "${scheduleTitle}".`,
           `/submissions/${sub.submission_uuid}`
         )
       ).catch(err => console.error('[notifications] inspector-submit failed:', err));
@@ -521,6 +534,12 @@ router.patch('/:roundId/attendee-submit', authenticateToken, async (req, res, ne
       return res.status(409).json({ error: 'Submission is not in rejected state.' });
     }
 
+    const { rows: reinspectSchedRows } = await pool.query(
+      'SELECT title FROM inspection_schedules WHERE submission_id = $1 LIMIT 1',
+      [sub.id]
+    );
+    const scheduleTitle = reinspectSchedRows[0]?.title ?? sub.submission_uuid;
+
     // No round cap — re-inspections are unlimited
 
     // Enforce attendee review deadline
@@ -581,8 +600,8 @@ await client.query(
       createNotifications(
         ids,
         'submission',
-        `Reinspection Required — Round ${nextRound}`,
-        `Attendee submitted their review. Inspector must complete Round ${nextRound} reinspection by ${inspectorDeadline.toLocaleString()}.`,
+        `${scheduleTitle} — Reinspection Required Round ${nextRound}`,
+        `Attendee submitted their review for "${scheduleTitle}". Inspector must complete Round ${nextRound} reinspection by ${inspectorDeadline.toLocaleString()}.`,
         `/submissions/${sub.submission_uuid}`
       )
     ).catch(err => console.error('[notifications] attendee-submit failed:', err));
