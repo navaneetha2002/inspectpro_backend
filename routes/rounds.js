@@ -223,9 +223,9 @@ router.post('/', authenticateToken,
         }
       }
 
-      // Advance overall status and sync current_round
+      // Advance overall status and sync current_round; bump submitted_at so the list shows the latest time
       await client.query(
-        `UPDATE form_submissions SET overall_status = 'submitted', current_round = $1 WHERE id = $2`,
+        `UPDATE form_submissions SET overall_status = 'submitted', current_round = $1, submitted_at = NOW() WHERE id = $2`,
         [roundNumber, sub.id]
       );
 

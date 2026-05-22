@@ -18,8 +18,22 @@ router.get('/', authenticateToken, async (req, res, next) => {
                 u.username AS submitted_by,
                 r.username AS reviewed_by_username,
                 COUNT(si.id) AS image_count,
-                (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_title,
-                (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_id
+                COALESCE(
+                  (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1),
+                  (SELECT title FROM inspection_schedules
+                   WHERE (assigned_to = fs.user_id OR attendee_id = fs.user_id)
+                   AND (category_id IS NULL OR category_id = fs.category_id)
+                   AND (location_id IS NULL OR location_id = fs.location_id)
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (scheduled_at - fs.submitted_at))) ASC LIMIT 1)
+                ) AS schedule_title,
+                COALESCE(
+                  (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1),
+                  (SELECT id FROM inspection_schedules
+                   WHERE (assigned_to = fs.user_id OR attendee_id = fs.user_id)
+                   AND (category_id IS NULL OR category_id = fs.category_id)
+                   AND (location_id IS NULL OR location_id = fs.location_id)
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (scheduled_at - fs.submitted_at))) ASC LIMIT 1)
+                ) AS schedule_id
          FROM form_submissions fs
          LEFT JOIN categories c ON c.id = fs.category_id
          LEFT JOIN locations l ON l.id = fs.location_id
@@ -34,8 +48,22 @@ router.get('/', authenticateToken, async (req, res, next) => {
       ({ rows } = await pool.query(
         `SELECT fs.*, c.name AS category_name, l.name AS location_name,
                 COUNT(si.id) AS image_count,
-                (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_title,
-                (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1) AS schedule_id
+                COALESCE(
+                  (SELECT title FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1),
+                  (SELECT title FROM inspection_schedules
+                   WHERE (assigned_to = fs.user_id OR attendee_id = fs.user_id)
+                   AND (category_id IS NULL OR category_id = fs.category_id)
+                   AND (location_id IS NULL OR location_id = fs.location_id)
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (scheduled_at - fs.submitted_at))) ASC LIMIT 1)
+                ) AS schedule_title,
+                COALESCE(
+                  (SELECT id FROM inspection_schedules WHERE submission_id = fs.id LIMIT 1),
+                  (SELECT id FROM inspection_schedules
+                   WHERE (assigned_to = fs.user_id OR attendee_id = fs.user_id)
+                   AND (category_id IS NULL OR category_id = fs.category_id)
+                   AND (location_id IS NULL OR location_id = fs.location_id)
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (scheduled_at - fs.submitted_at))) ASC LIMIT 1)
+                ) AS schedule_id
          FROM form_submissions fs
          LEFT JOIN categories c ON c.id = fs.category_id
          LEFT JOIN locations l ON l.id = fs.location_id
