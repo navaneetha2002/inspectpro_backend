@@ -20,46 +20,47 @@ router.get('/', authenticateToken, async (req, res, next) => {
     const { role, id: userId } = req.user;
     let query, params;
 
-    if (role === 'global_admin' || role === 'local_admin') {
-      query = `
-        SELECT s.*,
-               u.username   AS assigned_to_name,
-               cb.username  AS created_by_name,
-               att.username AS attendee_name,
-               c.name       AS category_name,
-               c.slug       AS category_slug,
-               l.name       AS location_name,
-               l.slug       AS location_slug,
-               fs.submission_uuid
+    const deadlineSubqueries = `
+           fs.submission_uuid,
+           s.attendee_review_due,
+           s.submission_deadline`;
+
+    const scheduleJoins = `
         FROM inspection_schedules s
         LEFT JOIN users u   ON s.assigned_to = u.id
         LEFT JOIN users cb  ON s.created_by  = cb.id
         LEFT JOIN users att ON s.attendee_id = att.id
         LEFT JOIN categories c ON s.category_id = c.id
         LEFT JOIN locations  l ON s.location_id  = l.id
-        LEFT JOIN form_submissions fs ON fs.id = s.submission_id
+        LEFT JOIN form_submissions fs ON fs.id = s.submission_id`;
+
+    const scheduleColumns = `
+               u.username   AS assigned_to_name,
+               cb.username  AS created_by_name,
+               att.username AS attendee_name,
+               c.name       AS category_name,
+               c.slug       AS category_slug,
+               l.name       AS location_name,
+               l.slug       AS location_slug`;
+
+    if (role === 'global_admin' || role === 'local_admin') {
+      query = `
+        SELECT s.id, s.title, s.category_id, s.location_id, s.assigned_to, s.attendee_id,
+               s.created_by, s.scheduled_at, s.due_at, s.deadline_notified_at,
+               s.status, s.notes, s.submission_id, s.created_at, s.updated_at,
+               ${scheduleColumns},
+               ${deadlineSubqueries}
+        ${scheduleJoins}
         ORDER BY s.scheduled_at ASC`;
       params = [];
     } else {
-      // Coordinators see what they created; inspectors see what's assigned to them
-      // Both cases handled by the OR — no role check needed here
       query = `
-        SELECT s.*,
-               u.username   AS assigned_to_name,
-               cb.username  AS created_by_name,
-               att.username AS attendee_name,
-               c.name       AS category_name,
-               c.slug       AS category_slug,
-               l.name       AS location_name,
-               l.slug       AS location_slug,
-               fs.submission_uuid
-        FROM inspection_schedules s
-        LEFT JOIN users u   ON s.assigned_to = u.id
-        LEFT JOIN users cb  ON s.created_by  = cb.id
-        LEFT JOIN users att ON s.attendee_id = att.id
-        LEFT JOIN categories c ON s.category_id = c.id
-        LEFT JOIN locations  l ON s.location_id  = l.id
-        LEFT JOIN form_submissions fs ON fs.id = s.submission_id
+        SELECT s.id, s.title, s.category_id, s.location_id, s.assigned_to, s.attendee_id,
+               s.created_by, s.scheduled_at, s.due_at, s.deadline_notified_at,
+               s.status, s.notes, s.submission_id, s.created_at, s.updated_at,
+               ${scheduleColumns},
+               ${deadlineSubqueries}
+        ${scheduleJoins}
         WHERE s.assigned_to = $1 OR s.created_by = $1 OR s.attendee_id = $1
         ORDER BY s.scheduled_at ASC`;
       params = [userId];
@@ -149,7 +150,9 @@ router.get('/attendees', authenticateToken, async (req, res) => {
 router.get('/:id', authenticateToken, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      `SELECT s.*,
+      `SELECT s.id, s.title, s.category_id, s.location_id, s.assigned_to, s.attendee_id,
+              s.created_by, s.scheduled_at, s.due_at, s.deadline_notified_at,
+              s.status, s.notes, s.submission_id, s.created_at, s.updated_at,
               u.username   AS assigned_to_name,
               cb.username  AS created_by_name,
               att.username AS attendee_name,
@@ -157,7 +160,9 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
               c.slug       AS category_slug,
               l.name       AS location_name,
               l.slug       AS location_slug,
-              fs.submission_uuid
+              fs.submission_uuid,
+              s.attendee_review_due,
+              s.submission_deadline
        FROM inspection_schedules s
        LEFT JOIN users u   ON s.assigned_to = u.id
        LEFT JOIN users cb  ON s.created_by  = cb.id
@@ -170,7 +175,6 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Schedule not found' });
 
-    // Non-admins can only view schedules assigned to them, created by them, or where they are the attendee
     const { role, id: userId } = req.user;
     if (
       role !== 'global_admin' &&
@@ -247,7 +251,7 @@ router.post('/', authenticateToken, authorizePermission('create_schedule'), asyn
 });
 
 // PUT /api/schedules/:id — full update (admin only)
-router.put('/:id', authenticateToken, authorizePermission('manage_schedules'), async (req, res, next) => {
+router.put('/:id', authenticateToken, authorizeRoles('global_admin', 'local_admin'), async (req, res, next) => {
   const { title, category_id, location_id, assigned_to, attendee_id, scheduled_at, due_at, submission_deadline, notes, status } = req.body;
   const allowed = ['pending', 'in_progress', 'completed', 'cancelled'];
 
@@ -324,6 +328,75 @@ router.patch('/:id/extend-deadline', authenticateToken,
     } catch (err) { next(err); }
   }
 );
+
+// PATCH /api/schedules/:id/reassign
+// Admin-only: update inspector (assigned_to), attendee, and/or submission_deadline
+router.patch('/:id/reassign', authenticateToken,
+  authorizeRoles('global_admin', 'local_admin'),
+  async (req, res, next) => {
+    try {
+      const { assigned_to, attendee_id, submission_deadline } = req.body;
+      const { role, location_id } = req.user;
+
+      const resolvedAttendeeId = await resolveUserId(attendee_id);
+
+      let whereClause, params;
+      if (role === 'global_admin') {
+        whereClause = 'WHERE id = $4';
+        params = [assigned_to ?? null, resolvedAttendeeId, submission_deadline ?? null, req.params.id];
+      } else {
+        // local_admin: restrict to schedules in their own location
+        whereClause = 'WHERE id = $4 AND location_id = $5';
+        params = [assigned_to ?? null, resolvedAttendeeId, submission_deadline ?? null, req.params.id, location_id];
+      }
+
+      const { rows } = await pool.query(
+        `UPDATE inspection_schedules SET
+           assigned_to         = COALESCE($1, assigned_to),
+           attendee_id         = COALESCE($2, attendee_id),
+           submission_deadline = COALESCE($3, submission_deadline),
+           updated_at          = NOW()
+         ${whereClause}
+         RETURNING *`,
+        params
+      );
+      if (!rows.length) return res.status(404).json({ error: 'Schedule not found or not authorised' });
+
+      const schedule = rows[0];
+      res.json(schedule);
+
+      // Notify the new inspector and attendee (fire-and-forget)
+      const notifUrl = `/schedules/${schedule.id}`;
+      const deadlineNote = submission_deadline
+        ? ` Submit by: ${new Date(submission_deadline).toLocaleString()}.`
+        : '';
+
+      if (assigned_to) {
+        createNotification(
+          Number(assigned_to),
+          'schedule',
+          'Inspection Reassigned to You',
+          `You have been reassigned as Inspector for: "${schedule.title}".${deadlineNote}`,
+          notifUrl
+        ).catch(err => console.error('[notifications] reassign inspector notify failed:', err));
+      }
+
+      if (resolvedAttendeeId && resolvedAttendeeId !== Number(assigned_to)) {
+        createNotification(
+          resolvedAttendeeId,
+          'schedule',
+          'Inspection Reassigned',
+          `You have been assigned as Attendee for: "${schedule.title}"`,
+          notifUrl
+        ).catch(err => console.error('[notifications] reassign attendee notify failed:', err));
+      }
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      next(err);
+    }
+  }
+);
+
 
 // PATCH /api/schedules/:id/status
 // Admins: any schedule

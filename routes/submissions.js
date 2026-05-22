@@ -171,7 +171,7 @@ router.patch(
   authorizeRoles('global_admin', 'local_admin', 'inspector'), // adjust roles as needed
   async (req, res, next) => {
     try {
-      const { status, review_notes } = req.body;
+      const { status, review_notes, attendee_review_due } = req.body;
 
       // Validate incoming status
       if (!['approved', 'rejected'].includes(status)) {
@@ -193,18 +193,28 @@ router.patch(
           error: `Submission is already '${submission.status}' and cannot be changed.`
         });
       }
-
+      
       const { rows: updated } = await pool.query(
-        `UPDATE form_submissions
-         SET status       = $1,
-            overall_status = $1,
-             review_notes = $2,
-             reviewed_by  = $3,
-             reviewed_at  = NOW()
-         WHERE id = $4
-         RETURNING *`,
-        [status, review_notes ?? null, req.user.id, submission.id]
-      );
+  `UPDATE form_submissions
+   SET status         = $1,
+       overall_status = $1,
+       review_notes   = $2,
+       reviewed_by    = $3,
+       reviewed_at    = NOW()
+   WHERE id = $4
+   RETURNING *`,
+  [status, review_notes ?? null, req.user.id, submission.id]
+);
+
+// Also save attendee_review_due to the schedule if rejecting
+if (status === 'rejected' && attendee_review_due) {
+  await pool.query(
+    `UPDATE inspection_schedules
+     SET attendee_review_due = $1
+     WHERE submission_id = $2`,
+    [attendee_review_due, submission.id]
+  );
+}
 
       res.json({ success: true, submission: updated[0] });
 
